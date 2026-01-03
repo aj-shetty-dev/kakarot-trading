@@ -2,9 +2,10 @@
 Data models for Upstox V3 WebSocket messages
 """
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import datetime
+from ..config.timezone import ist_now
 
 
 class TickData(BaseModel):
@@ -78,6 +79,8 @@ class SubscriptionRequest(BaseModel):
     data: Data
 
 
+from ..config.timezone import ist_now
+
 class UnsubscriptionRequest(BaseModel):
     """WebSocket unsubscription request"""
     
@@ -96,4 +99,4 @@ class WebSocketMessage(BaseModel):
     
     type: str  # "tick", "subscription", "error", etc.
     data: dict
-    timestamp: datetime = datetime.utcnow()
+    timestamp: datetime = Field(default_factory=ist_now)

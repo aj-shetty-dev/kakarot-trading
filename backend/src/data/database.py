@@ -12,14 +12,20 @@ from ..config.settings import settings
 from ..config.logging import logger
 
 # Create engine
-engine = create_engine(
-    settings.database_url,
-    echo=False,
-    pool_size=settings.db_pool_size,
-    max_overflow=settings.db_max_overflow,
-    # Use NullPool for SQLite (thread-safety)
-    poolclass=NullPool if "sqlite" in settings.database_url else None,
-)
+if "sqlite" in settings.database_url:
+    engine = create_engine(
+        settings.database_url,
+        echo=False,
+        poolclass=NullPool,
+        connect_args={"check_same_thread": False}
+    )
+else:
+    engine = create_engine(
+        settings.database_url,
+        echo=False,
+        pool_size=settings.db_pool_size,
+        max_overflow=settings.db_max_overflow,
+    )
 
 # Create session factory
 SessionLocal = sessionmaker(

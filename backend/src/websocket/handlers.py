@@ -12,17 +12,20 @@ Updated for Upstox V3:
 import asyncio
 import json
 import os
+import logging
 from datetime import datetime
 from typing import Optional, Dict
-from sqlalchemy.orm import Session
-import logging
 from logging.handlers import RotatingFileHandler
+from sqlalchemy.orm import Session
 
 from ..config.logging import websocket_logger as logger
+from ..config.timezone import IST_TZ, ist_now
+from ..config.settings import settings
 from ..data.models import Tick, Symbol, SubscribedOption
 from ..data.database import SessionLocal
 from .data_models import TickData
 
+# ============================================================
 # ============================================================
 # LOGGING CONFIGURATION - Space-efficient with rotation
 # ============================================================
@@ -42,8 +45,14 @@ BACKUP_COUNT = int(os.environ.get('LOG_BACKUP_COUNT', '3'))
 # Database always gets ALL ticks, this only affects log files
 LOG_SAMPLE_RATE = int(os.environ.get('LOG_SAMPLE_RATE', '1'))
 
-log_dir = os.environ.get('LOG_DIR', '/app/logs')
+log_dir = settings.log_dir
 os.makedirs(log_dir, exist_ok=True)
+
+# Create daily log directory
+date_str = ist_now().strftime('%Y-%m-%d')
+daily_log_dir = os.path.join(log_dir, date_str)
+market_data_dir = os.path.join(daily_log_dir, "market_data")
+os.makedirs(market_data_dir, exist_ok=True)
 
 # Create a separate logger for live prices with ROTATION
 price_logger = logging.getLogger('live_prices')
@@ -52,18 +61,34 @@ price_logger.setLevel(logging.INFO)
 if ENABLE_FILE_LOGGING:
     # Rotating file handler - 50MB max, keeps 3 backups (200MB total max)
     price_file_handler = RotatingFileHandler(
-        f'{log_dir}/live_prices.log',
+        f'{market_data_dir}/ticks.log',
         maxBytes=MAX_LOG_SIZE,
         backupCount=BACKUP_COUNT
     )
-    price_file_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
+    formatter = logging.Formatter('%(asctime)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+    formatter.converter = lambda *args: datetime.now(IST_TZ).timetuple()
+    price_file_handler.setFormatter(formatter)
     price_logger.addHandler(price_file_handler)
 
-# JSON log file for programmatic access (also with rotation)
-json_log_path = f'{log_dir}/live_prices.jsonl'
 
-# TOON log file for token-efficient representation
-toon_log_path = f'{log_dir}/live_prices.toon'
+def _dated_log_path(ext: str) -> str:
+    """Return log path for current IST date (daily file)."""
+    # Use the market_data directory
+    return os.path.join(market_data_dir, f'ticks.{ext}')
+
+
+def _rotate_file(path: str) -> None:
+    """Rotate a log file, keeping BACKUP_COUNT backups."""
+    for i in range(BACKUP_COUNT, 0, -1):
+        old = f"{path}.{i}"
+        new = f"{path}.{i + 1}"
+        if os.path.exists(old):
+            if i == BACKUP_COUNT:
+                os.remove(old)
+            else:
+                os.rename(old, new)
+    if os.path.exists(path):
+        os.rename(path, f"{path}.1")
 
 # Counter for sampling (shared across JSON/TOON writes)
 _sample_counter = 0
@@ -79,10 +104,10 @@ def _should_sample() -> bool:
 
 
 def _write_json_log(tick_data: TickData, option_name: str):
-    """Write a single tick as JSONL (rotation handled)."""
+    """Write a single tick as JSONL (daily file with rotation)."""
     try:
         tick_json = {
-            "ts": datetime.utcnow().strftime('%H:%M:%S'),  # Shorter timestamp
+            "ts": ist_now().strftime('%H:%M:%S'),  # Shorter timestamp in IST
             "opt": option_name[:30],  # Truncate option name
             "key": tick_data.symbol,
             "ltp": round(tick_data.last_price, 2),
@@ -91,10 +116,9 @@ def _write_json_log(tick_data: TickData, option_name: str):
             "oi": tick_data.oi
         }
 
-        # Check file size and rotate if needed
-        if os.path.exists(json_log_path):
-            if os.path.getsize(json_log_path) > MAX_LOG_SIZE:
-                _rotate_json_log()
+        json_log_path = _dated_log_path('jsonl')
+        if os.path.exists(json_log_path) and os.path.getsize(json_log_path) > MAX_LOG_SIZE:
+            _rotate_file(json_log_path)
 
         with open(json_log_path, 'a') as f:
             f.write(json.dumps(tick_json, separators=(',', ':')) + '\n')
@@ -102,27 +126,26 @@ def _write_json_log(tick_data: TickData, option_name: str):
         logger.error(f"Error writing JSON log: {e}")
 
 
-def _ensure_toon_header():
+def _ensure_toon_header(toon_path: str):
     """Ensure TOON file has a header before appending rows."""
     try:
-        if not os.path.exists(toon_log_path) or os.path.getsize(toon_log_path) == 0:
-            with open(toon_log_path, 'a') as f:
+        if not os.path.exists(toon_path) or os.path.getsize(toon_path) == 0:
+            with open(toon_path, 'a') as f:
                 f.write("ticks{ts,opt,key,ltp,d,iv,oi}:\n")
     except Exception as e:
         logger.error(f"Error preparing TOON log header: {e}")
 
 
 def _write_toon_log(tick_data: TickData, option_name: str):
-    """Write a single tick row in TOON tabular form (rotation + header)."""
+    """Write a single tick row in TOON tabular form (daily file + rotation)."""
     try:
-        # Rotate if needed before writing
-        if os.path.exists(toon_log_path):
-            if os.path.getsize(toon_log_path) > MAX_LOG_SIZE:
-                _rotate_toon_log()
+        toon_log_path = _dated_log_path('toon')
+        if os.path.exists(toon_log_path) and os.path.getsize(toon_log_path) > MAX_LOG_SIZE:
+            _rotate_file(toon_log_path)
 
-        _ensure_toon_header()
+        _ensure_toon_header(toon_log_path)
 
-        ts = datetime.utcnow().strftime('%H:%M:%S')
+        ts = ist_now().strftime('%H:%M:%S')
         opt = option_name[:50]  # keep readable but bounded
         key = tick_data.symbol
         ltp = f"{tick_data.last_price:.2f}" if tick_data.last_price is not None else "null"
@@ -130,7 +153,6 @@ def _write_toon_log(tick_data: TickData, option_name: str):
         iv = "null" if tick_data.iv is None else f"{tick_data.iv * 100:.1f}"
         oi = "null" if tick_data.oi is None else str(tick_data.oi)
 
-        # TOON tabular row (comma-separated, indented)
         row = f"  {ts},{opt},{key},{ltp},{d},{iv},{oi}\n"
 
         with open(toon_log_path, 'a') as f:
@@ -139,36 +161,6 @@ def _write_toon_log(tick_data: TickData, option_name: str):
         logger.error(f"Error writing TOON log: {e}")
 
 
-def _rotate_toon_log():
-    """Rotate TOON log file (similar to JSON rotation)."""
-    try:
-        for i in range(BACKUP_COUNT, 0, -1):
-            old = f"{toon_log_path}.{i}"
-            new = f"{toon_log_path}.{i+1}"
-            if os.path.exists(old):
-                if i == BACKUP_COUNT:
-                    os.remove(old)
-                else:
-                    os.rename(old, new)
-        os.rename(toon_log_path, f"{toon_log_path}.1")
-    except Exception as e:
-        logger.error(f"Error rotating TOON log: {e}")
-
-
-def _rotate_json_log():
-    """Manually rotate JSON log file"""
-    try:
-        for i in range(BACKUP_COUNT, 0, -1):
-            old = f"{json_log_path}.{i}"
-            new = f"{json_log_path}.{i+1}"
-            if os.path.exists(old):
-                if i == BACKUP_COUNT:
-                    os.remove(old)  # Delete oldest
-                else:
-                    os.rename(old, new)
-        os.rename(json_log_path, f"{json_log_path}.1")
-    except Exception as e:
-        logger.error(f"Error rotating JSON log: {e}")
 
 
 def log_tick_structured(tick_data: TickData, option_name: str):
@@ -198,7 +190,7 @@ class TickDataHandler:
         """
         self.db = db_session
         self.tick_count = 0
-        self.last_log_time = datetime.utcnow()
+        self.last_log_time = ist_now()
         
         # Cache instrument_key -> symbol_id mapping
         self._instrument_key_cache: Dict[str, int] = {}
@@ -316,7 +308,7 @@ class TickDataHandler:
             log_tick_structured(tick_data, option_name)
 
             # Log progress periodically to main log
-            now = datetime.utcnow()
+            now = ist_now()
             elapsed = (now - self.last_log_time).total_seconds()
             
             if elapsed > 60:  # Log every 60 seconds
@@ -438,6 +430,20 @@ async def process_tick(tick_data: TickData) -> bool:
     if aggregated_handler:
         result = await aggregated_handler.handle_tick(tick_data)
         results.append(result)
+    
+    # Process through signal detector
+    try:
+        from ..signals.service import signal_service
+        await signal_service.process_tick(tick_data)
+    except Exception as e:
+        logger.error(f"Error in signal detection: {e}")
+
+    # Update Candle Manager
+    try:
+        from ..trading.candle_manager import candle_manager
+        candle_manager.update_candle(tick_data)
+    except Exception as e:
+        logger.error(f"Error updating candle manager: {e}")
     
     return all(results)
 

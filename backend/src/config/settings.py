@@ -3,13 +3,14 @@ Configuration settings for Upstox Trading Bot
 Loads from environment variables or .env file
 """
 
+import json
 from pydantic_settings import BaseSettings
-from typing import Optional
+from typing import Optional, Any, Dict
 from pathlib import Path
 
 
 class Settings(BaseSettings):
-    """Application settings loaded from environment variables"""
+    """Application settings loaded from environment variables and config file"""
 
     # ========== UPSTOX API CREDENTIALS ==========
     upstox_api_key: str
@@ -46,6 +47,13 @@ class Settings(BaseSettings):
     volume_multiplier: float = 2.5
     min_signal_strength: float = 0.6
 
+    # ========== SCALPING STRATEGY ==========
+    scalping_enabled: bool = True
+    scalping_timeframe: str = "1m"
+    scalping_take_profit_percent: float = 0.01
+    scalping_stop_loss_percent: float = 0.005
+    scalping_capital_allocation: float = 10000.0
+
     # ========== DATABASE ==========
     database_url: str = "sqlite:///./upstox_trading.db"
     db_pool_size: int = 5
@@ -59,11 +67,35 @@ class Settings(BaseSettings):
     environment: str = "development"
     debug: bool = True
 
+    # ========== MARKET HOURS (IST) ==========
+    market_open_time: str = "09:00"
+    market_close_time: str = "16:00"
+    auto_start_stop: bool = True
+
+    # ========== NOTIFICATIONS ==========
+    telegram_bot_token: Optional[str] = None
+    telegram_chat_id: Optional[str] = None
+    enable_notifications: bool = True
+
     class Config:
         env_file = ".env"
         case_sensitive = False
+        extra = "ignore"
 
     def __init__(self, **data):
+        # Load from config.json if it exists
+        config_path = Path(__file__).parent.parent.parent / "config.json"
+        if config_path.exists():
+            try:
+                with open(config_path, "r") as f:
+                    config_data = json.load(f)
+                    # Merge config_data into data, but let data (env vars) take precedence
+                    for key, value in config_data.items():
+                        if key not in data or data[key] is None:
+                            data[key] = value
+            except Exception as e:
+                print(f"Warning: Could not load config.json: {e}")
+
         super().__init__(**data)
         # Create log directory if it doesn't exist
         Path(self.log_dir).mkdir(exist_ok=True)

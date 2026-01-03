@@ -2,203 +2,74 @@
 
 Intelligent trading system for NSE FNO instruments with AI-powered signal detection and automated order execution.
 
-## Features
+## 🚀 Quick Start
 
-- ✅ Real-time WebSocket data from Upstox
-- ✅ Spike detection with technical indicators
-- ✅ AI-powered noise filtering
-- ✅ Automated order management with rate limiting
-- ✅ Risk management with stop-loss and trailing stops
-- ✅ Paper trading mode for testing
-- ✅ PostgreSQL for data persistence
-- ✅ Docker deployment ready
+### For Developers (Local Build)
+1.  **Configure Credentials**: Update `backend/.env` with your Upstox API Key, Secret, and Access Token.
+2.  **Launch System**: Run `./dev.sh` in the project root.
+3.  **Access Dashboard**: Open [http://localhost:8501](http://localhost:8501) in your browser.
 
-## Trading Parameters
+### For Distribution (Pre-built)
+If you are using the version shared in the `dist/` folder:
+1.  **Configure Credentials**: Update the `.env` file in the `dist/upstox-trading-bot/` folder.
+2.  **Launch System**: Run `./start.sh` inside that folder.
+3.  **Access Dashboard**: Open [http://localhost:8501](http://localhost:8501).
 
-```
+## 📁 Project Structure
+
+- `backend/`: Core trading logic, FastAPI services, and WebSocket V3 integration.
+- `backend/logs/`: **Centralized logging** for all services (Trading, Signals, Dashboard).
+- `scripts/`: Maintenance tools (token refresh, ISIN mapping) and distribution scripts.
+- `docs/`: Technical guides, architecture diagrams, and archived phase reports.
+- `dist/`: Shareable distribution package pre-configured for Docker Hub.
+
+## 🛠 Key Components
+
+- **Session Manager**: Automated lifecycle management based on IST market hours.
+- **WebSocket V3 Client**: High-speed binary data feed with auto-reconnection.
+- **Signal Engine**: Real-time spike detection with AI-powered noise filtering.
+- **Telegram Bot**: Instant alerts for trades, session changes, and settings updates.
+
+## 📋 Features
+
+- ✅ **Real-time Data**: Native Upstox V3 WebSocket integration.
+- ✅ **Smart Filtering**: Technical indicators combined with AI noise reduction.
+- ✅ **Risk Management**: Automated SL, TP, and Trailing Stop execution.
+- ✅ **Immediate Feedback**: Telegram notifications for manual settings updates.
+- ✅ **Dockerized**: Fully containerized environment for consistent deployment.
+- ✅ **AI Analysis**: Automated post-trade review for strategy refinement.
+
+## 📊 Trading Parameters
+
+```text
 Account Size: ₹1,00,000
 Risk Per Trade: 5%
 Position Size: 30% per trade
-Stop Loss: 5%
-Take Profit: 4%
-Trailing Stop: 2%
+Stop Loss: 5% | Take Profit: 4% | Trailing Stop: 2%
 Max Concurrent Positions: 3
 Daily Loss Limit: 2%
 ```
 
-## Trading Universe
+## 🌌 Trading Universe
 
-**All NSE FNO symbols EXCEPT:**
-- NIFTY
-- BANKNIFTY
-- FINANCENIFTY
-- NIFTYNEXT50
+**All NSE FNO symbols EXCEPT indices:**
+- NIFTY, BANKNIFTY, FINANCENIFTY, NIFTYNEXT50.
 
-## Project Structure
+## 📈 Monitoring & Logs
 
-```
-upstox/
-├── backend/
-│   ├── src/
-│   │   ├── config/           # Configuration and settings
-│   │   ├── screening/        # FNO symbol management
-│   │   ├── websocket/        # Real-time data connection
-│   │   ├── data/             # Database models and operations
-│   │   ├── signals/          # Spike detection and validation
-│   │   ├── trading/          # Order management
-│   │   ├── risk/             # Risk calculations
-│   │   ├── monitoring/       # Logging and metrics
-│   │   └── main.py           # FastAPI entry point
-│   ├── tests/                # Test suite
-│   ├── requirements.txt      # Python dependencies
-│   ├── Dockerfile            # Docker image
-│   └── .env.example          # Environment variables template
-├── docker-compose.yml        # Docker services (PostgreSQL, Redis)
-└── IMPLEMENTATION_PLAN.md    # Detailed implementation guide
-```
+All logs are stored in `backend/logs/` organized by date:
+- **Live Trading**: `tail -f backend/logs/$(date +%Y-%m-%d)/trading.log`
+- **Signal Detection**: `tail -f backend/logs/$(date +%Y-%m-%d)/signals.log`
 
-## Quick Start
+## 📄 Documentation Index
 
-### Prerequisites
-
-- Docker & Docker Compose
-- Python 3.11+
-- Upstox API credentials
-
-### Installation
-
-1. **Clone and setup:**
-```bash
-cd upstox/backend
-cp .env.example .env
-# Edit .env with your credentials
-```
-
-2. **Start services with Docker:**
-```bash
-docker-compose up -d
-```
-
-3. **Initialize database:**
-```bash
-docker exec upstox_trading_bot python -c "from src.data.database import init_db; init_db()"
-```
-
-4. **Visit API docs:**
-```
-http://localhost:8000/docs
-```
-
-## Configuration
-
-All settings are in `.env` file:
-
-```env
-# Upstox API
-UPSTOX_API_KEY=your_key
-UPSTOX_API_SECRET=your_secret
-UPSTOX_ACCESS_TOKEN=your_token
-
-# Trading Settings
-ACCOUNT_SIZE=100000
-RISK_PER_TRADE=0.05
-POSITION_SIZE_PERCENT=0.30
-```
-
-See `.env.example` for all available options.
-
-## Development
-
-### Running Locally (without Docker)
-
-```bash
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Create .env file
-cp .env.example .env
-
-# Run application
-uvicorn src.main:app --reload
-```
-
-### Running Tests
-
-```bash
-pytest tests/ -v
-```
-
-## API Endpoints
-
-- `GET /` - Health check
-- `GET /api/v1/symbols` - List tradeable symbols
-- `GET /api/v1/signals` - Recent signals
-- `GET /api/v1/trades` - Trade history
-- `GET /api/v1/positions` - Current positions
-- `GET /api/v1/account` - Account information
-
-## Trading Workflow
-
-```
-1. Fetch FNO Universe
-   ↓
-2. Subscribe to WebSocket
-   ↓
-3. Receive Price Ticks
-   ↓
-4. Detect Spikes (Technical Analysis)
-   ↓
-5. Filter Noise (AI Model)
-   ↓
-6. Validate Signal
-   ↓
-7. Calculate Position Size
-   ↓
-8. Submit Order to Upstox
-   ↓
-9. Monitor Position
-   ↓
-10. Exit (TP/SL/Trailing)
-```
-
-## Risk Management
-
-- Position size capped at 30% of account
-- Stop loss at 5% below entry
-- Take profit at 4% above entry
-- Trailing stop at 2% after hitting TP
-- Daily loss limit: 2% of account
-- Max 3 concurrent positions
-
-## Monitoring & Logging
-
-Logs are stored in `backend/logs/`:
-- `trading.log` - Trading operations
-- `signals.log` - Signal detection
-- `errors.log` - Error tracking
-
-## Next Steps
-
-1. Implement WebSocket client for real-time data
-2. Build spike detection algorithm
-3. Integrate AI noise filter
-4. Implement order execution
-5. Complete risk management
-6. Paper trading validation
-7. Go live!
-
-## Support
-
-For issues or questions, refer to:
-- `IMPLEMENTATION_PLAN.md` - Detailed implementation guide
-- `docs/` - API documentation
+- [Operations Guide](docs/OPERATIONS_GUIDE.md): Daily workflow and troubleshooting.
+- [Deployment Checklist](docs/DEPLOYMENT_CHECKLIST.md): Steps for production setup.
+- [WebSocket Guide](docs/WEBSOCKET_GUIDE.md): Technical details on the V3 feed.
+- [ISIN Integration](docs/ISIN_INTEGRATION_GUIDE.md): How instrument mapping works.
+- [Archived Reports](docs/archive/): Historical phase reports and test results.
 
 ---
 
-**Status**: 🔧 In Development (Phase 1 complete)
-
-**Last Updated**: 29-Nov-2025
+**Status**: 🚀 Production Ready
+**Last Updated**: January 2026

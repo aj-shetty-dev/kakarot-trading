@@ -7,7 +7,6 @@ from typing import Dict, List, Optional
 from ..config.logging import logger
 from .bracket_selector import get_bracket_selector
 from .fno_fetcher import get_fno_symbols
-from .options_service import get_options_service
 
 
 class BracketSubscriptionService:
@@ -31,11 +30,6 @@ class BracketSubscriptionService:
         """
         try:
             logger.info("🎯 Initializing bracket subscription service...")
-            
-            options_service = get_options_service()
-            if not options_service.is_initialized:
-                logger.error("❌ Options service not initialized")
-                return False
             
             selector = get_bracket_selector()
             self.symbol_prices = symbol_prices

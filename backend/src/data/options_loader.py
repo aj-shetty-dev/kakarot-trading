@@ -31,6 +31,7 @@ from ..config.settings import settings
 from .models import Symbol, SubscribedOption
 from .database import SessionLocal
 from .isin_mapping_hardcoded import get_instrument_key, validate_symbol, ISIN_MAPPING
+from ..config.timezone import ist_now
 
 # Maximum symbols per batch API call (safe limit to avoid URL length issues)
 BATCH_SIZE = 100
@@ -552,7 +553,7 @@ class OptionsLoaderService:
         """
         Export selected options to JSON file for review
         
-        Creates: /app/logs/selected_options_YYYY-MM-DD.json
+        Creates: {settings.log_dir}/{YYYY-MM-DD}/selected_options.json
         Contains all 832 ATM+OTM options with full details (4 per symbol)
         """
         try:
@@ -572,7 +573,7 @@ class OptionsLoaderService:
             otm_pe = [o for o in options if o.option_type == "PE" and o.is_otm]
             
             export_data = {
-                "generated_at": datetime.utcnow().isoformat(),
+                "generated_at": ist_now().isoformat(),
                 "total_options": len(options),
                 "unique_symbols": len(set(o.symbol for o in options)),
                 "summary": {
@@ -598,22 +599,21 @@ class OptionsLoaderService:
                 })
             
             # Write to file
-            log_dir = Path("/app/logs")
-            log_dir.mkdir(parents=True, exist_ok=True)
+            base_log_dir = Path(settings.log_dir)
             
-            # Dated file for history
-            date_str = datetime.utcnow().strftime("%Y-%m-%d")
-            dated_file = log_dir / f"selected_options_{date_str}.json"
+            # Create daily log directory with subdirectories
+            date_str = ist_now().strftime("%Y-%m-%d")
+            daily_log_dir = base_log_dir / date_str
+            system_dir = daily_log_dir / "system"
+            system_dir.mkdir(parents=True, exist_ok=True)
             
-            # Also write to a "latest" file for easy access
-            latest_file = log_dir / "selected_options_latest.json"
+            # Dated file inside the system folder
+            dated_file = system_dir / "selected_options.json"
             
-            for filepath in [dated_file, latest_file]:
-                with open(filepath, "w") as f:
-                    json.dump(export_data, f, indent=2)
+            with open(dated_file, "w") as f:
+                json.dump(export_data, f, indent=2)
             
             logger.info(f"📄 Exported {len(options)} options to {dated_file}")
-            logger.info(f"📄 Latest file: {latest_file}")
             
         except Exception as e:
             logger.warning(f"⚠️  Failed to export options to file: {e}")

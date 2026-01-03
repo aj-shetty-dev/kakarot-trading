@@ -29,8 +29,10 @@ wheels/
 *~
 .DS_Store
 logs/
+backend/logs/
 *.log
 *.db
 postgres_data/
 redis_data/
 node_modules/
+backend/config.json

@@ -8,10 +8,10 @@ IMPORTANT: Now using ISIN-based symbols for correct Upstox API calls
 - This fixes the bug where API was returning empty data for all symbols
 """
 
-from datetime import datetime
 from sqlalchemy.orm import Session
 from ..data.models import Symbol
 from ..data.database import SessionLocal
+from ..config.timezone import ist_now
 from ..config.constants import SymbolStatus, EXCLUDED_SYMBOLS
 from ..config.logging import logger
 from .isin_mapping_hardcoded import ISIN_MAPPING, get_instrument_key
@@ -75,7 +75,7 @@ def seed_symbols(db: Session, use_api: bool = True) -> int:
                 status=SymbolStatus.ACTIVE,
                 avg_daily_volume=1000000,  # Default volume estimate
                 liquidity_score=0.7,  # Default liquidity for FNO
-                last_refreshed=datetime.utcnow(),
+                last_refreshed=ist_now(),
                 # Store ISIN and instrument key for API calls
                 isin=isin,  # Assuming Symbol model has isin field
                 instrument_token=instrument_key,  # Store the full NSE_EQ|ISIN format

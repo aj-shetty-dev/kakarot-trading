@@ -18,10 +18,13 @@ from typing import Optional, Callable, List, Dict, Any
 from datetime import datetime
 import logging
 import traceback
+import time
 
 from ..config.settings import settings
 from ..config.constants import UPSTOX_WEBSOCKET_URL, WEBSOCKET_RECONNECT_DELAY, WEBSOCKET_MAX_RECONNECT_ATTEMPTS
 from ..config.logging import websocket_logger as logger
+from ..config.timezone import ist_now
+from ..notifications.telegram import get_telegram_service
 from .data_models import TickData, SubscriptionRequest, UnsubscriptionRequest
 from .proto_handler import get_message_parser, UpstoxV3MessageParser
 
@@ -56,14 +59,28 @@ class UpstoxWebSocketClient:
         self.message_handlers: List[Callable] = []
         self.reconnect_attempts = 0
         self.max_reconnect_attempts = WEBSOCKET_MAX_RECONNECT_ATTEMPTS
+        self.last_reconnect_time = 0
+        self.base_reconnect_delay = WEBSOCKET_RECONNECT_DELAY
+        self.network_error_count = 0
+        self.max_network_errors = 10
+        
+        # V3 Message Parser
+        self.message_parser = get_message_parser()
+        
+        # Telegram Service
+        self.telegram = get_telegram_service(settings)
+        self.last_reconnect_time = 0
+        self.base_reconnect_delay = WEBSOCKET_RECONNECT_DELAY
+        self.network_error_count = 0
+        self.max_network_errors = 10
         
         # V3 Message Parser
         self.message_parser = get_message_parser()
 
     async def connect(self) -> bool:
         """
-        Connect to Upstox V3 WebSocket with proper authentication - VERBOSE
-        First gets authorization, then connects with the authorized redirect URI
+        Connect to Upstox V3 WebSocket with proper authentication and error handling.
+        First gets authorization, then connects with the authorized redirect URI.
         
         Returns:
             bool: True if connection successful, False otherwise
@@ -84,65 +101,90 @@ class UpstoxWebSocketClient:
                 "Authorization": f"Bearer {self.access_token}"
             }
             
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    "https://api.upstox.com/v3/feed/market-data-feed/authorize",
-                    headers=headers
-                ) as resp:
-                    logger.info(f"[VERBOSE] Authorization response status: {resp.status}")
-                    
-                    if resp.status == 200:
-                        auth_data = await resp.json()
-                        logger.info(f"[VERBOSE] Auth response: {str(auth_data)[:200]}")
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        "https://api.upstox.com/v3/feed/market-data-feed/authorize",
+                        headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=30)
+                    ) as resp:
+                        logger.info(f"[VERBOSE] Authorization response status: {resp.status}")
                         
-                        # Extract WebSocket URL from response
-                        ws_uri = auth_data.get("data", {}).get("authorizedRedirectUri")
-                        if not ws_uri:
-                            logger.error("[ERROR] No authorized redirect URI in response")
-                            self.is_connected = False
+                        if resp.status == 200:
+                            auth_data = await resp.json()
+                            logger.info(f"[VERBOSE] Auth response: {str(auth_data)[:200]}")
+                            
+                            # Extract WebSocket URL from response
+                            ws_uri = auth_data.get("data", {}).get("authorizedRedirectUri")
+                            if not ws_uri:
+                                logger.error("[ERROR] No authorized redirect URI in response")
+                                self.network_error_count = 0
+                                return False
+                            
+                            logger.info(f"[SUCCESS] Got authorized WebSocket URI")
+                            logger.info(f"[VERBOSE] WebSocket URI: {ws_uri[:80]}...")
+                        elif resp.status == 401:
+                            logger.error("❌ [CRITICAL] UPSTOX ACCESS TOKEN EXPIRED OR INVALID")
+                            logger.error("👉 Please generate a new token and update your .env file.")
+                            logger.error("👉 Run 'python3 update_token.py' in the dist folder.")
+                            
+                            # Send Telegram notification
+                            await self.telegram.send_message(
+                                "🚨 <b>CRITICAL: Upstox Access Token Expired!</b>\n"
+                                "The WebSocket connection failed because the token is invalid or expired. "
+                                "Please update your <code>.env</code> file with a new token."
+                            )
+                            
+                            self.network_error_count = 0 # Don't retry indefinitely for auth errors
                             return False
-                        
-                        logger.info(f"[SUCCESS] Got authorized WebSocket URI")
-                        logger.info(f"[VERBOSE] WebSocket URI: {ws_uri[:80]}...")
-                    else:
-                        error_text = await resp.text()
-                        logger.error(f"[ERROR] Authorization failed with status {resp.status}")
-                        logger.error(f"[VERBOSE] Response: {error_text[:200]}")
-                        self.is_connected = False
-                        return False
+                        else:
+                            error_text = await resp.text()
+                            logger.error(f"[ERROR] Authorization failed with status {resp.status}")
+                            logger.error(f"[VERBOSE] Response: {error_text[:200]}")
+                            self.network_error_count += 1
+                            return False
+            except (aiohttp.ClientConnectorError, aiohttp.ClientSSLError, asyncio.TimeoutError) as ne:
+                logger.error(f"[ERROR] Network error during authorization: {type(ne).__name__}")
+                logger.error(f"[VERBOSE] {str(ne)}")
+                self.network_error_count += 1
+                return False
             
             # Step 2: Connect to the authorized WebSocket URI
             logger.info("[VERBOSE] Step 2: Connecting to authorized WebSocket URI...")
             
-            self.websocket = await websockets.connect(
-                ws_uri,
-                ping_interval=30,
-                ping_timeout=10
-            )
-            
-            logger.info("[SUCCESS] WebSocket connection established!")
-            logger.info(f"[VERBOSE] WebSocket object: {type(self.websocket).__name__}")
-            
-        except aiohttp.ClientError as ae:
-            logger.error("[ERROR] HTTP error during authorization")
-            logger.error(f"[VERBOSE] aiohttp error: {str(ae)}")
-            logger.error(f"[TRACEBACK]\n{traceback.format_exc()}")
-            self.is_connected = False
-            return False
-            
-        except websockets.exceptions.InvalidStatusCode as isc:
-            logger.error("[ERROR] WebSocket connection rejected by server")
-            logger.error(f"[VERBOSE] InvalidStatusCode: {isc}")
-            logger.error(f"[TRACEBACK]\n{traceback.format_exc()}")
-            self.is_connected = False
-            return False
+            try:
+                self.websocket = await asyncio.wait_for(
+                    websockets.connect(
+                        ws_uri,
+                        ping_interval=30,
+                        ping_timeout=10
+                    ),
+                    timeout=30
+                )
+                
+                logger.info("[SUCCESS] WebSocket connection established!")
+                logger.info(f"[VERBOSE] WebSocket object: {type(self.websocket).__name__}")
+                self.network_error_count = 0  # Reset error count on success
+                
+                # Send Telegram notification
+                await self.telegram.send_message("🔌 <b>WebSocket Connected</b>\nLive data feed is active.")
+                
+            except asyncio.TimeoutError:
+                logger.error("[ERROR] WebSocket connection timeout")
+                self.network_error_count += 1
+                return False
+            except websockets.exceptions.InvalidStatusCode as isc:
+                logger.error("[ERROR] WebSocket connection rejected by server")
+                logger.error(f"[VERBOSE] InvalidStatusCode: {isc}")
+                self.network_error_count += 1
+                return False
                 
         except Exception as e:
             logger.error("[ERROR] WebSocket connection failed")
             logger.error(f"[VERBOSE] Exception type: {type(e).__name__}")
             logger.error(f"[VERBOSE] Exception: {str(e)}")
             logger.error(f"[TRACEBACK]\n{traceback.format_exc()}")
-            self.is_connected = False
+            self.network_error_count += 1
             return False
         
         # Success
@@ -273,8 +315,8 @@ class UpstoxWebSocketClient:
 
     async def listen(self) -> None:
         """
-        Listen for incoming messages from WebSocket
-        Runs in background, processes all messages
+        Listen for incoming messages from WebSocket with automatic reconnection.
+        Runs in background, processes all messages and handles network failures.
         """
         try:
             while self.is_connected and self.websocket:
@@ -286,13 +328,35 @@ class UpstoxWebSocketClient:
                 except websockets.exceptions.ConnectionClosed:
                     logger.warning("[WARNING] WebSocket connection closed")
                     self.is_connected = False
+                    await self.telegram.send_message("⚠️ <b>WebSocket Disconnected</b>\nAttempting to reconnect...")
+                    await self._attempt_reconnect()
+                    
+                except (websockets.exceptions.WebSocketException, OSError) as we:
+                    logger.warning(f"[WARNING] WebSocket error ({type(we).__name__}): {str(we)}")
+                    self.is_connected = False
+                    self.network_error_count += 1
+                    await self.telegram.send_message(f"⚠️ <b>WebSocket Error:</b> <code>{type(we).__name__}</code>\nAttempting to reconnect...")
+                    await self._attempt_reconnect()
+                    
+                except asyncio.TimeoutError:
+                    logger.warning("[WARNING] WebSocket receive timeout, attempting reconnect")
+                    self.is_connected = False
+                    self.network_error_count += 1
+                    await self.telegram.send_message("⚠️ <b>WebSocket Timeout:</b> No data received. Attempting to reconnect...")
                     await self._attempt_reconnect()
                     
                 except Exception as e:
-                    logger.error(f"[ERROR] Error in listen loop: {e}")
+                    logger.error(f"[ERROR] Unexpected error in listen loop: {type(e).__name__} - {e}")
+                    self.network_error_count += 1
+                    if self.network_error_count > self.max_network_errors:
+                        logger.error("[CRITICAL] Too many network errors, stopping listen loop")
+                        await self.telegram.send_message("🚨 <b>CRITICAL: WebSocket Stopped!</b>\nToo many network errors. Manual intervention required.")
+                        self.is_connected = False
+                        break
                     
         except Exception as e:
             logger.error(f"[ERROR] Fatal error in listen: {e}")
+            await self.telegram.send_message(f"🚨 <b>CRITICAL: WebSocket Fatal Error!</b>\nError: <code>{str(e)}</code>")
             self.is_connected = False
 
     async def _handle_message(self, message: bytes) -> None:
@@ -413,7 +477,7 @@ class UpstoxWebSocketClient:
                 gamma=float(data.get("gamma", 0)),
                 theta=float(data.get("theta", 0)),
                 vega=float(data.get("vega", 0)),
-                timestamp=datetime.utcnow()
+                timestamp=ist_now()
             )
             return tick
             
@@ -451,7 +515,7 @@ class UpstoxWebSocketClient:
                 gamma=float(data.get("gamma", 0)),
                 theta=float(data.get("theta", 0)),
                 vega=float(data.get("vega", 0)),
-                timestamp=datetime.utcnow()
+                timestamp=ist_now()
             )
             return tick
             
@@ -470,22 +534,39 @@ class UpstoxWebSocketClient:
         logger.info(f"Registered message handler: {handler.__name__}")
 
     async def _attempt_reconnect(self) -> None:
-        """Attempt to reconnect to WebSocket"""
+        """Attempt to reconnect to WebSocket with exponential backoff."""
         if self.reconnect_attempts >= self.max_reconnect_attempts:
-            logger.error("Max reconnection attempts reached")
+            logger.error(f"[CRITICAL] Max reconnection attempts ({self.max_reconnect_attempts}) reached")
+            if self.network_error_count > self.max_network_errors:
+                logger.error("[CRITICAL] Network error limit exceeded. Manual intervention may be required.")
             return
 
         self.reconnect_attempts += 1
-        wait_time = WEBSOCKET_RECONNECT_DELAY * self.reconnect_attempts
+        
+        # Exponential backoff with cap: base_delay * (2 ^ attempt_number)
+        exponential_delay = self.base_reconnect_delay * (2 ** min(self.reconnect_attempts - 1, 5))
+        # Cap max delay at 5 minutes
+        max_delay = 300
+        wait_time = min(exponential_delay, max_delay)
         
         logger.info(f"[VERBOSE] Reconnecting (attempt {self.reconnect_attempts}/{self.max_reconnect_attempts})...")
-        logger.info(f"[VERBOSE] Waiting {wait_time} seconds...")
+        logger.info(f"[VERBOSE] Waiting {wait_time:.1f} seconds before retry...")
+        logger.info(f"[VERBOSE] Network errors so far: {self.network_error_count}/{self.max_network_errors}")
         
-        await asyncio.sleep(wait_time)
+        try:
+            await asyncio.sleep(wait_time)
+        except asyncio.CancelledError:
+            logger.info("[VERBOSE] Reconnect sleep cancelled")
+            return
         
+        logger.info(f"[VERBOSE] Attempting reconnection...")
         if await self.connect():
+            logger.info("[SUCCESS] Reconnection successful!")
             if self.subscribed_symbols:
+                logger.info(f"[VERBOSE] Re-subscribing to {len(self.subscribed_symbols)} symbols...")
                 await self.subscribe(list(self.subscribed_symbols))
+        else:
+            logger.warning("[WARNING] Reconnection attempt failed, will retry")
 
     @staticmethod
     def _symbol_to_token(symbol: str) -> str:

@@ -8,7 +8,6 @@ from typing import List, Optional, Union
 from pydantic import BaseModel
 
 from ...data.bracket_selector import get_bracket_selector
-from ...data.options_service import get_options_service
 from ...config.logging import logger
 
 router = APIRouter(prefix="/api/v1/brackets", tags=["brackets"])

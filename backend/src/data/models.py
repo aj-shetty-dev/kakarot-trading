@@ -3,7 +3,6 @@ Data models for Upstox Trading Bot
 SQLAlchemy ORM models for database
 """
 
-from datetime import datetime
 from typing import Optional, Dict, Any
 from enum import Enum
 from sqlalchemy import create_engine, Column, String, Float, Integer, DateTime, Boolean, JSON, ForeignKey, Enum as SQLEnum
@@ -16,6 +15,8 @@ from ..config.constants import (
     OrderStatus, OrderType, OrderSide, SignalStatus, SignalType,
     TradeStatus, PositionStatus, SymbolStatus
 )
+
+from ..config.timezone import ist_now
 
 Base = declarative_base()
 
@@ -43,8 +44,8 @@ class Symbol(Base):
     liquidity_score = Column(Float)  # 0-1
 
     # Timestamps
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=ist_now)
+    updated_at = Column(DateTime, default=ist_now, onupdate=ist_now)
     last_refreshed = Column(DateTime)
 
     # Relationships
@@ -91,7 +92,7 @@ class Tick(Base):
 
     # Timestamp
     timestamp = Column(DateTime, nullable=False, index=True)
-    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    created_at = Column(DateTime, default=ist_now, index=True)
 
     # Relationships
     signals = relationship("Signal", back_populates="tick")
@@ -181,7 +182,7 @@ class Trade(Base):
     commission = Column(Float, default=0.0)
 
     # Execution timestamps
-    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    created_at = Column(DateTime, default=ist_now, index=True)
     entry_time = Column(DateTime)
     exit_time = Column(DateTime)
 
@@ -223,7 +224,7 @@ class Position(Base):
     max_drawdown = Column(Float, default=0.0)
 
     # Timestamps
-    opened_at = Column(DateTime, default=datetime.utcnow)
+    opened_at = Column(DateTime, default=ist_now)
     closed_at = Column(DateTime)
 
     # Metadata
@@ -254,8 +255,8 @@ class OptionChain(Base):
     exchange_token = Column(String(50), nullable=False)
     
     # Timestamps
-    created_at = Column(DateTime, default=datetime.utcnow, index=True)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=ist_now, index=True)
+    updated_at = Column(DateTime, default=ist_now, onupdate=ist_now)
 
     def __repr__(self):
         return f"<OptionChain({self.symbol} {self.strike_price} {self.option_type} {self.expiry_date})>"
@@ -272,7 +273,7 @@ class RateLimitLog(Base):
     last_order_time = Column(DateTime)
     window_start_minute = Column(DateTime)
     window_start_hour = Column(DateTime)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=ist_now)
 
     def __repr__(self):
         return f"<RateLimitLog({self.symbol})>"
@@ -302,8 +303,8 @@ class Account(Base):
     win_rate = Column(Float, default=0.0)
     
     # Timestamps
-    date = Column(DateTime, default=datetime.utcnow, index=True)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    date = Column(DateTime, default=ist_now, index=True)
+    updated_at = Column(DateTime, default=ist_now, onupdate=ist_now)
 
     def __repr__(self):
         return f"<Account(balance={self.available_balance}, daily_pnl={self.daily_pnl})>"
@@ -340,8 +341,8 @@ class SubscribedOption(Base):
     last_price_updated_at = Column(DateTime)
     
     # Timestamps
-    created_at = Column(DateTime, default=datetime.utcnow, index=True)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=ist_now, index=True)
+    updated_at = Column(DateTime, default=ist_now, onupdate=ist_now)
 
     def __repr__(self):
         return f"<SubscribedOption({self.symbol} {self.strike_price} {self.option_type})>"
@@ -359,7 +360,29 @@ class AuditLog(Base):
     new_value = Column(JSON)
     user = Column(String(50))  # System, API, etc.
     description = Column(String(500))
-    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    created_at = Column(DateTime, default=ist_now, index=True)
 
     def __repr__(self):
         return f"<AuditLog({self.event_type}, {self.entity_type})>"
+
+
+class TradingSession(Base):
+    """Tracks historical bot sessions (start/stop times and summary)"""
+    __tablename__ = "trading_sessions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    start_time = Column(DateTime, nullable=False, index=True)
+    end_time = Column(DateTime)
+    
+    # Summary stats for the session
+    total_trades = Column(Integer, default=0)
+    total_pnl = Column(Float, default=0.0)
+    status = Column(String(20), default="ACTIVE")  # ACTIVE, COMPLETED, CRASHED
+    
+    # Environment info
+    mode = Column(String(20))  # Paper/Live
+    
+    created_at = Column(DateTime, default=ist_now)
+
+    def __repr__(self):
+        return f"<TradingSession({self.start_time}, {self.status})>"

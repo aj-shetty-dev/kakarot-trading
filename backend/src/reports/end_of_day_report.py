@@ -14,183 +14,200 @@ import json
 import os
 from datetime import datetime, timedelta
 from collections import defaultdict
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
+from sqlalchemy import func, extract
 
 from ..data.database import SessionLocal
-from ..data.models import Tick, Symbol, SubscribedOption
+from ..data.models import Tick, Symbol, SubscribedOption, Trade, Signal
+from ..config.settings import settings
+from ..config.timezone import ist_now
+from ..config.constants import TradeStatus
+from ..config.logging import logger
 
 
-def generate_end_of_day_report(output_dir: str = "/app/logs") -> Dict[str, Any]:
+def generate_end_of_day_report(output_dir: Optional[str] = None) -> Dict[str, Any]:
     """
-    Generate end of day report with tick statistics.
+    Generate end of day report with tick statistics using efficient database aggregation.
     
     Returns:
         Dict with report data
     """
+    if output_dir is None:
+        today_str = ist_now().strftime('%Y-%m-%d')
+        output_dir = os.path.join(settings.log_dir, today_str)
+    
+    os.makedirs(output_dir, exist_ok=True)
+    
     db = SessionLocal()
     
     try:
-        today = datetime.utcnow().date()
+        today = ist_now().date()
         today_start = datetime.combine(today, datetime.min.time())
         
-        print("=" * 60)
-        print(f"📊 END OF DAY REPORT - {today}")
-        print("=" * 60)
+        logger.info(f"📊 Generating End of Day Report for {today}...")
         
-        # Get all today's ticks
-        today_ticks = db.query(Tick).filter(
+        # 1. Get total tick count
+        total_ticks = db.query(func.count(Tick.id)).filter(
             Tick.timestamp >= today_start
-        ).all()
+        ).scalar() or 0
         
-        total_ticks = len(today_ticks)
-        print(f"\n📈 Total Ticks Recorded: {total_ticks:,}")
+        logger.info(f"📈 Total Ticks Recorded: {total_ticks:,}")
         
         if total_ticks == 0:
-            print("\n⚠️  No ticks recorded today (market may be closed)")
-            return {"total_ticks": 0, "date": str(today)}
+            logger.warning("⚠️ No ticks recorded today (market may be closed)")
+            report = {"total_ticks": 0, "date": str(today), "generated_at": ist_now().isoformat()}
+            report_path = os.path.join(output_dir, "eod_report.json")
+            with open(report_path, 'w') as f:
+                json.dump(report, f, indent=2)
+            return report
         
-        # Group by symbol
-        ticks_by_symbol: Dict[str, List[Tick]] = defaultdict(list)
-        for tick in today_ticks:
-            ticks_by_symbol[tick.symbol_id].append(tick)
+        # 2. Get statistics per symbol using aggregation
+        # We want: symbol_id, count, min_price, max_price
+        stats_query = db.query(
+            Tick.symbol_id,
+            func.count(Tick.id).label("tick_count"),
+            func.min(Tick.price).label("low"),
+            func.max(Tick.price).label("high"),
+            func.avg(Tick.oi).label("avg_oi"),
+            func.avg(Tick.iv).label("avg_iv")
+        ).filter(
+            Tick.timestamp >= today_start
+        ).group_by(Tick.symbol_id).order_by(func.count(Tick.id).desc()).limit(50).all()
         
-        print(f"📊 Unique Options with Data: {len(ticks_by_symbol)}")
-        
-        # Get symbol details
+        # Get symbol names
         subscribed_options = db.query(SubscribedOption).all()
         symbol_to_option = {}
         for opt in subscribed_options:
             symbol = db.query(Symbol).filter(Symbol.symbol == opt.symbol).first()
             if symbol:
-                symbol_to_option[symbol.id] = opt
-        
-        # Calculate statistics per option
-        print("\n" + "-" * 60)
-        print("TOP 20 OPTIONS BY TICK COUNT:")
-        print("-" * 60)
+                symbol_to_option[symbol.id] = opt.option_symbol
         
         option_stats = []
-        for symbol_id, ticks in ticks_by_symbol.items():
-            opt = symbol_to_option.get(symbol_id)
-            option_name = opt.option_symbol if opt else f"Unknown ({symbol_id})"
+        for s in stats_query:
+            option_name = symbol_to_option.get(s.symbol_id, f"Unknown ({str(s.symbol_id)[:8]})")
             
-            prices = [t.price for t in ticks if t.price]
+            # Get first and last price for this symbol
+            first_price = db.query(Tick.price).filter(
+                Tick.symbol_id == s.symbol_id,
+                Tick.timestamp >= today_start
+            ).order_by(Tick.timestamp.asc()).limit(1).scalar()
             
-            if prices:
-                stats = {
-                    "option": option_name,
-                    "symbol_id": str(symbol_id),
-                    "tick_count": len(ticks),
-                    "first_price": prices[0],
-                    "last_price": prices[-1],
-                    "high": max(prices),
-                    "low": min(prices),
-                    "change": prices[-1] - prices[0],
-                    "change_pct": ((prices[-1] - prices[0]) / prices[0] * 100) if prices[0] else 0,
-                    "avg_oi": sum(t.oi or 0 for t in ticks) / len(ticks),
-                    "avg_iv": sum(t.iv or 0 for t in ticks) / len(ticks),
-                }
-                option_stats.append(stats)
+            last_price = db.query(Tick.price).filter(
+                Tick.symbol_id == s.symbol_id,
+                Tick.timestamp >= today_start
+            ).order_by(Tick.timestamp.desc()).limit(1).scalar()
+            
+            change = (last_price - first_price) if last_price and first_price else 0
+            change_pct = (change / first_price * 100) if first_price else 0
+            
+            option_stats.append({
+                "option": option_name,
+                "symbol_id": str(s.symbol_id),
+                "tick_count": s.tick_count,
+                "first_price": first_price,
+                "last_price": last_price,
+                "high": s.high,
+                "low": s.low,
+                "change": change,
+                "change_pct": change_pct,
+                "avg_oi": float(s.avg_oi or 0),
+                "avg_iv": float(s.avg_iv or 0)
+            })
         
-        # Sort by tick count
-        option_stats.sort(key=lambda x: x["tick_count"], reverse=True)
+        # 3. Time distribution (by hour)
+        hour_counts_query = db.query(
+            extract('hour', Tick.timestamp).label('hour'),
+            func.count(Tick.id)
+        ).filter(
+            Tick.timestamp >= today_start
+        ).group_by('hour').all()
         
-        # Print top 20
-        for i, stat in enumerate(option_stats[:20], 1):
-            change_symbol = "🟢" if stat["change"] >= 0 else "🔴"
-            print(f"{i:2}. {stat['option'][:35]:<35} | "
-                  f"Ticks: {stat['tick_count']:>5} | "
-                  f"LTP: {stat['last_price']:>8.2f} | "
-                  f"{change_symbol} {stat['change']:+.2f} ({stat['change_pct']:+.1f}%)")
+        hour_counts = {int(h): count for h, count in hour_counts_query}
         
-        # Time distribution
-        print("\n" + "-" * 60)
-        print("TICK DISTRIBUTION BY HOUR:")
-        print("-" * 60)
+        # 4. Greeks summary
+        greeks = db.query(
+            func.avg(Tick.delta).label("avg_delta"),
+            func.avg(Tick.theta).label("avg_theta"),
+            func.avg(Tick.iv).label("avg_iv")
+        ).filter(
+            Tick.timestamp >= today_start
+        ).first()
         
-        hour_counts = defaultdict(int)
-        for tick in today_ticks:
-            hour = tick.timestamp.hour
-            hour_counts[hour] += 1
+        # 5. Trading Performance
+        today_trades = db.query(Trade).filter(
+            Trade.created_at >= today_start
+        ).all()
         
-        for hour in sorted(hour_counts.keys()):
-            count = hour_counts[hour]
-            bar = "█" * (count // 1000) if count >= 1000 else "▌" * (count // 500) or "·"
-            # Convert to IST (UTC+5:30)
-            ist_hour = (hour + 5) % 24
-            ist_min = 30
-            print(f"  {ist_hour:02d}:{ist_min:02d} IST: {count:>6,} ticks {bar}")
+        total_trades = len(today_trades)
+        closed_trades = [t for t in today_trades if t.status != TradeStatus.OPEN]
+        winning_trades = [t for t in closed_trades if (t.pnl or 0) > 0]
         
-        # Summary by option type
-        print("\n" + "-" * 60)
-        print("SUMMARY BY OPTION TYPE:")
-        print("-" * 60)
-        
-        ce_ticks = 0
-        pe_ticks = 0
-        for stat in option_stats:
-            if "CE" in stat["option"]:
-                ce_ticks += stat["tick_count"]
-            elif "PE" in stat["option"]:
-                pe_ticks += stat["tick_count"]
-        
-        print(f"  📈 CALL (CE) ticks: {ce_ticks:>10,}")
-        print(f"  📉 PUT (PE) ticks:  {pe_ticks:>10,}")
-        
-        # Greeks summary
-        print("\n" + "-" * 60)
-        print("GREEKS SUMMARY (Average across all ticks):")
-        print("-" * 60)
-        
-        all_deltas = [t.delta for t in today_ticks if t.delta]
-        all_thetas = [t.theta for t in today_ticks if t.theta]
-        all_ivs = [t.iv for t in today_ticks if t.iv]
-        
-        if all_deltas:
-            print(f"  Δ Delta (avg):  {sum(all_deltas)/len(all_deltas):>8.4f}")
-        if all_thetas:
-            print(f"  θ Theta (avg):  {sum(all_thetas)/len(all_thetas):>8.4f}")
-        if all_ivs:
-            print(f"  IV (avg):       {sum(all_ivs)/len(all_ivs)*100:>7.2f}%")
+        total_pnl = sum(t.pnl or 0 for t in closed_trades)
+        win_rate = (len(winning_trades) / len(closed_trades) * 100) if closed_trades else 0
         
         # Save report to file
         report = {
             "date": str(today),
-            "generated_at": datetime.utcnow().isoformat(),
+            "generated_at": ist_now().isoformat(),
             "total_ticks": total_ticks,
-            "unique_options": len(ticks_by_symbol),
-            "ce_ticks": ce_ticks,
-            "pe_ticks": pe_ticks,
-            "hour_distribution": dict(hour_counts),
-            "top_options": option_stats[:50],
-            "all_options": option_stats
+            "unique_options": len(stats_query),
+            "trading": {
+                "total_trades": total_trades,
+                "closed_trades": len(closed_trades),
+                "win_rate": win_rate,
+                "total_pnl": total_pnl,
+                "trades": [
+                    {
+                        "id": str(t.id),
+                        "side": t.order_side,
+                        "entry": t.entry_price,
+                        "exit": t.exit_price,
+                        "pnl": t.pnl,
+                        "status": t.status
+                    } for t in today_trades
+                ]
+            },
+            "hour_distribution": hour_counts,
+            "top_options": option_stats,
+            "greeks": {
+                "avg_delta": float(greeks.avg_delta or 0) if greeks else 0,
+                "avg_theta": float(greeks.avg_theta or 0) if greeks else 0,
+                "avg_iv": float(greeks.avg_iv or 0) if greeks else 0
+            }
         }
         
-        report_path = f"{output_dir}/eod_report_{today}.json"
+        report_path = os.path.join(output_dir, "eod_report.json")
         with open(report_path, 'w') as f:
             json.dump(report, f, indent=2, default=str)
         
-        print("\n" + "=" * 60)
-        print(f"✅ Report saved to: {report_path}")
-        print("=" * 60)
-        
+        logger.info(f"✅ EOD Report saved to: {report_path}")
         return report
         
+    except Exception as e:
+        logger.error(f"❌ Error generating EOD report: {e}")
+        return {"error": str(e), "date": str(ist_now().date())}
     finally:
         db.close()
 
 
-def export_all_ticks_csv(output_path: str = "/app/logs/all_ticks.csv") -> int:
+def export_all_ticks_csv(output_path: Optional[str] = None) -> int:
     """
     Export all today's ticks to CSV file.
     
     Returns:
         Number of ticks exported
     """
+    if output_path is None:
+        today_str = ist_now().strftime('%Y-%m-%d')
+        output_path = os.path.join(settings.log_dir, today_str, "all_ticks.csv")
+    
+    # Ensure directory exists
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    
     db = SessionLocal()
     
     try:
-        today = datetime.utcnow().date()
+        today = ist_now().date()
         today_start = datetime.combine(today, datetime.min.time())
         
         # Get subscribed options for names
@@ -217,7 +234,7 @@ def export_all_ticks_csv(output_path: str = "/app/logs/all_ticks.csv") -> int:
                        f"{tick.vega or ''},{tick.iv or ''},{tick.oi or ''},"
                        f"{tick.volume or ''},{tick.bid or ''},{tick.ask or ''}\n")
         
-        print(f"✅ Exported {len(ticks):,} ticks to {output_path}")
+        logger.info(f"✅ Exported {len(ticks):,} ticks to {output_path}")
         return len(ticks)
         
     finally:

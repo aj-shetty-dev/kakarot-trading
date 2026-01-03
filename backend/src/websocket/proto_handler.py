@@ -7,7 +7,8 @@ Uses compiled MarketDataFeed_pb2.py for proper protobuf parsing.
 
 import json
 from typing import Dict, Any, Optional, List
-from datetime import datetime
+
+from ..config.timezone import ist_timestamp
 
 from ..config.logging import websocket_logger as logger
 
@@ -98,7 +99,7 @@ class UpstoxV3MessageParser:
             bytes: Encoded message ready to send
         """
         if not guid:
-            guid = f"sub-{len(instrument_keys)}-{datetime.utcnow().timestamp()}"
+            guid = f"sub-{len(instrument_keys)}-{ist_timestamp()}"
         
         request = {
             "guid": guid,
@@ -128,7 +129,7 @@ class UpstoxV3MessageParser:
             bytes: Encoded message ready to send
         """
         if not guid:
-            guid = f"unsub-{len(instrument_keys)}-{datetime.utcnow().timestamp()}"
+            guid = f"unsub-{len(instrument_keys)}-{ist_timestamp()}"
         
         request = {
             "guid": guid,

@@ -5,6 +5,7 @@ Main FastAPI application entry point
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+import asyncio
 
 from .config.settings import settings
 from .config.logging import logger, setup_logging
@@ -12,6 +13,9 @@ from .data.database import init_db
 from .websocket.service import initialize_websocket_service, shutdown_websocket_service, get_websocket_service
 from .data.options_service_v3 import initialize_options_service_v3
 from .data.options_loader import load_options_at_startup
+from .trading.session_manager import session_manager
+from .trading.service import trading_service
+from .notifications.telegram import get_telegram_service
 
 # Setup logging
 setup_logging()
@@ -24,6 +28,40 @@ async def lifespan(app: FastAPI):
     """
     # Startup
     logger.info("🚀 Upstox Trading Bot starting...")
+    
+    # Send Telegram notification
+    telegram = get_telegram_service(settings)
+    from .config.auth_utils import get_token_expiry
+    from .config.timezone import ist_now
+    token_info = get_token_expiry(settings.upstox_access_token)
+    
+    token_status = "✅ Valid" if not token_info.get("expired") else "🚨 EXPIRED"
+    time_left = token_info.get("time_left", "N/A")
+    
+    # Determine market status for startup message
+    now = ist_now()
+    open_h, open_m = map(int, settings.market_open_time.split(":"))
+    close_h, close_m = map(int, settings.market_close_time.split(":"))
+    market_open = now.replace(hour=open_h, minute=open_m, second=0, microsecond=0)
+    market_close = now.replace(hour=close_h, minute=close_m, second=0, microsecond=0)
+    
+    if now.weekday() >= 5:
+        market_status = "📅 Weekend (Closed)"
+    elif now < market_open:
+        market_status = f"💤 Closed (Opens at {settings.market_open_time})"
+    elif now >= market_close:
+        market_status = f"🔕 Closed (Closed at {settings.market_close_time})"
+    else:
+        market_status = "🔔 Open (Trading Active)"
+
+    await telegram.send_message(
+        f"🚀 <b>Upstox Trading Bot Starting</b>\n"
+        f"Environment: <code>{settings.environment}</code>\n"
+        f"Mode: <code>{'Paper Trading' if settings.paper_trading_mode else 'LIVE'}</code>\n"
+        f"Market: <b>{market_status}</b>\n"
+        f"Token: {token_status} ({time_left} left)"
+    )
+
     try:
         init_db()
         logger.info("✅ Database initialized")
@@ -33,28 +71,40 @@ async def lifespan(app: FastAPI):
         await initialize_options_service_v3()
         logger.info("✅ Options service initialized")
 
-        # Load options at startup (fetch from API and store filtered ATM ± 1)
-        logger.info("📋 Loading options at startup...")
-        options_count = await load_options_at_startup()
-        logger.info(f"✅ Options loaded: {options_count} subscribed options ready")
-
-        # Initialize WebSocket service for real-time market data
-        logger.info("📡 Initializing WebSocket service...")
-        ws_service = await initialize_websocket_service()
-        if ws_service:
-            logger.info("✅ WebSocket service initialized")
+        # Start Market Session Manager (handles 9-3 schedule)
+        if settings.auto_start_stop:
+            logger.info("🕒 Starting Market Session Manager...")
+            await session_manager.start_monitoring()
         else:
-            logger.warning("⚠️ WebSocket service failed to initialize")
+            # Manual mode: start everything now
+            logger.info("📋 Manual mode: Loading options and starting WebSocket...")
+            options_count = await load_options_at_startup()
+            logger.info(f"✅ Options loaded: {options_count} subscribed options ready")
+            
+            ws_service = await initialize_websocket_service()
+            if ws_service:
+                logger.info("✅ WebSocket service initialized")
+                # Start position monitoring task
+                asyncio.create_task(trading_service.monitor_positions())
+                logger.info("📈 Position monitoring started")
+            else:
+                logger.warning("⚠️ WebSocket service failed to initialize")
+                await telegram.send_message("⚠️ <b>Warning:</b> WebSocket service failed to initialize during startup.")
 
     except Exception as e:
         logger.error(f"❌ Failed to initialize services: {e}")
+        await telegram.send_message(f"❌ <b>CRITICAL: Startup Failed!</b>\nError: <code>{str(e)}</code>")
         raise
 
     yield
 
     # Shutdown
     logger.info("🛑 Upstox Trading Bot shutting down...")
+    await telegram.send_message("🛑 <b>Upstox Trading Bot Shutting Down</b>")
     try:
+        if settings.auto_start_stop:
+            await session_manager.stop_monitoring()
+            
         await shutdown_websocket_service()
         logger.info("✅ WebSocket service shutdown complete")
     except Exception as e:
@@ -94,6 +144,10 @@ app.include_router(bracket_management.router)
 # Register verification routes
 from .api.routes import verification
 app.include_router(verification.router)
+
+# Register monitoring routes
+from .api.routes import monitoring
+app.include_router(monitoring.router)
 
 
 # ========== HEALTH CHECK ==========
