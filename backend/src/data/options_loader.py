@@ -49,15 +49,17 @@ class OptionsLoaderService:
     """
     
     def __init__(self):
-        self.upstox_access_token = settings.upstox_access_token
         self.api_base_url_v3 = "https://api.upstox.com/v3"  # v3 for LTP (batch support)
         self.loaded_count = 0
         self.failed_symbols = []
         # Cache for master instruments file (all FNO options)
         self._all_fno_options: Dict[str, List[Dict]] = {}  # symbol -> contracts
-        # Headers with User-Agent to avoid Cloudflare blocking
-        self.headers = {
-            "Authorization": f"Bearer {self.upstox_access_token}",
+
+    @property
+    def headers(self):
+        """Dynamic headers to ensure we always use the latest token from settings"""
+        return {
+            "Authorization": f"Bearer {settings.upstox_access_token}",
             "Content-Type": "application/json",
             "Accept": "application/json",
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
@@ -85,60 +87,79 @@ class OptionsLoaderService:
         try:
             logger.info("📥 Downloading master instruments file (NSE.json.gz)...")
             
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.get(NSE_INSTRUMENTS_URL)
-                
-                if response.status_code != 200:
-                    logger.error(f"❌ Failed to download master file: HTTP {response.status_code}")
-                    return {}
-                
-                # Decompress gzip
-                content = gzip.decompress(response.content)
-                instruments = json.loads(content)
-                
-                logger.info(f"✅ Downloaded {len(instruments)} instruments ({len(response.content)/1024/1024:.2f} MB)")
-                
-                # Filter to FNO options only (NSE_FO segment, CE/PE types)
-                fno_options = [
-                    i for i in instruments 
-                    if i.get('segment') == 'NSE_FO' and i.get('instrument_type') in ['CE', 'PE']
-                ]
-                
-                logger.info(f"📊 Found {len(fno_options)} FNO options (CE/PE)")
-                
-                # Group by underlying symbol
-                by_symbol: Dict[str, List[Dict]] = {}
-                for opt in fno_options:
-                    symbol = opt.get('underlying_symbol') or opt.get('name', '').split()[0]
-                    if symbol:
-                        if symbol not in by_symbol:
-                            by_symbol[symbol] = []
+            # Retry logic for master file download
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+                        response = await client.get(NSE_INSTRUMENTS_URL)
                         
-                        # Convert expiry from timestamp (ms) to date string
-                        expiry_ts = opt.get('expiry')
-                        expiry_date = None
-                        if expiry_ts:
-                            try:
-                                # Upstox uses milliseconds timestamp
-                                expiry_date = datetime.fromtimestamp(expiry_ts / 1000).strftime('%Y-%m-%d')
-                            except:
-                                expiry_date = str(expiry_ts)
-                        
-                        by_symbol[symbol].append({
-                            'trading_symbol': opt.get('trading_symbol'),
-                            'instrument_key': opt.get('instrument_key'),
-                            'strike_price': opt.get('strike_price'),
-                            'instrument_type': opt.get('instrument_type'),  # CE or PE
-                            'expiry': expiry_date,
-                            'lot_size': opt.get('lot_size'),
-                            'exchange_token': opt.get('exchange_token'),
-                        })
-                
-                logger.info(f"📊 Grouped options for {len(by_symbol)} underlying symbols")
-                
-                # Cache the result
-                self._all_fno_options = by_symbol
-                return by_symbol
+                        if response.status_code == 200:
+                            # Decompress gzip
+                            content = gzip.decompress(response.content)
+                            instruments = json.loads(content)
+                            
+                            # Clear response content from memory immediately
+                            del response
+                            
+                            logger.info(f"✅ Downloaded {len(instruments)} instruments ({len(content)/1024/1024:.2f} MB)")
+                            break
+                        else:
+                            logger.warning(f"⚠️ Attempt {attempt+1} failed: HTTP {response.status_code}")
+                            if attempt == max_retries - 1:
+                                return {}
+                except (httpx.RequestError, gzip.BadGzipFile, json.JSONDecodeError) as e:
+                    logger.warning(f"⚠️ Attempt {attempt+1} failed with error: {e}")
+                    if attempt == max_retries - 1:
+                        logger.error("❌ All attempts to download/process master file failed")
+                        return {}
+                    import asyncio
+                    await asyncio.sleep(2 ** attempt) # Exponential backoff
+            
+            # Filter to FNO options only (NSE_FO segment, CE/PE types)
+            fno_options = [
+                i for i in instruments 
+                if i.get('segment') == 'NSE_FO' and i.get('instrument_type') in ['CE', 'PE']
+            ]
+            
+            # Clear full instruments list to save memory
+            del instruments
+            
+            logger.info(f"📊 Found {len(fno_options)} FNO options (CE/PE)")
+            
+            # Group by underlying symbol
+            by_symbol: Dict[str, List[Dict]] = {}
+            for opt in fno_options:
+                symbol = opt.get('underlying_symbol') or opt.get('name', '').split()[0]
+                if symbol:
+                    if symbol not in by_symbol:
+                        by_symbol[symbol] = []
+                    
+                    # Convert expiry from timestamp (ms) to date string
+                    expiry_ts = opt.get('expiry')
+                    expiry_date = None
+                    if expiry_ts:
+                        try:
+                            # Upstox uses milliseconds timestamp
+                            expiry_date = datetime.fromtimestamp(expiry_ts / 1000).strftime('%Y-%m-%d')
+                        except:
+                            expiry_date = str(expiry_ts)
+                    
+                    by_symbol[symbol].append({
+                        'trading_symbol': opt.get('trading_symbol'),
+                        'instrument_key': opt.get('instrument_key'),
+                        'strike_price': opt.get('strike_price'),
+                        'instrument_type': opt.get('instrument_type'),  # CE or PE
+                        'expiry': expiry_date,
+                        'lot_size': opt.get('lot_size'),
+                        'exchange_token': opt.get('exchange_token'),
+                    })
+            
+            logger.info(f"📊 Grouped options for {len(by_symbol)} underlying symbols")
+            
+            # Cache the result
+            self._all_fno_options = by_symbol
+            return by_symbol
                 
         except Exception as e:
             logger.error(f"❌ Error downloading master instruments: {e}")

@@ -2,6 +2,7 @@ import logging
 from typing import Dict, List, Optional
 from datetime import datetime
 from ..config.timezone import ist_now
+from ..signals.ml_pipeline import ml_pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +113,10 @@ class PaperTradingManager:
             self.winning_trades += 1
         else:
             self.losing_trades += 1
+            
+        # Update ML pipeline with outcome
+        pnl_pct = (pnl / (entry_price * quantity)) * 100
+        ml_pipeline.update_outcome(pos.get('trade_id', symbol), pnl_pct)
             
         log_msg = (
             f"🏁 PAPER TRADE CLOSED ({reason})\n"

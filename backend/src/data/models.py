@@ -101,6 +101,29 @@ class Tick(Base):
         return f"<Tick({self.symbol}, {self.price}, {self.timestamp})>"
 
 
+class Candle(Base):
+    """Represents a 1-minute OHLCV candle"""
+    __tablename__ = "candles"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    symbol_id = Column(UUID(as_uuid=True), ForeignKey("symbols.id"), nullable=False, index=True)
+    symbol = relationship("Symbol")
+
+    timeframe = Column(String(10), default="1m", index=True)
+    timestamp = Column(DateTime, nullable=False, index=True)
+    
+    open = Column(Float, nullable=False)
+    high = Column(Float, nullable=False)
+    low = Column(Float, nullable=False)
+    close = Column(Float, nullable=False)
+    volume = Column(Integer, nullable=False)
+
+    created_at = Column(DateTime, default=ist_now)
+
+    def __repr__(self):
+        return f"<Candle({self.symbol}, {self.timeframe}, {self.timestamp})>"
+
+
 class Signal(Base):
     """Represents a detected trading signal"""
     __tablename__ = "signals"
@@ -109,7 +132,7 @@ class Signal(Base):
     symbol_id = Column(UUID(as_uuid=True), ForeignKey("symbols.id"), nullable=False, index=True)
     symbol = relationship("Symbol", back_populates="signals")
 
-    tick_id = Column(UUID(as_uuid=True), ForeignKey("ticks.id"), nullable=False)
+    tick_id = Column(UUID(as_uuid=True), ForeignKey("ticks.id"), nullable=True)
     tick = relationship("Tick", back_populates="signals")
 
     # Signal details
@@ -386,3 +409,29 @@ class TradingSession(Base):
 
     def __repr__(self):
         return f"<TradingSession({self.start_time}, {self.status})>"
+
+
+class MLFeatureLog(Base):
+    """Logs features and outcomes for ML training"""
+    __tablename__ = "ml_feature_logs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    symbol_id = Column(UUID(as_uuid=True), ForeignKey("symbols.id"), nullable=False, index=True)
+    
+    # Features (Indicators at time of signal)
+    features = Column(JSON, nullable=False)
+    
+    # Label (Outcome of the trade)
+    # 1 = Profit, 0 = Loss, None = Pending
+    label = Column(Integer)
+    pnl_percent = Column(Float)
+    
+    # Metadata
+    signal_type = Column(String(20))
+    timestamp = Column(DateTime, default=ist_now, index=True)
+    
+    # Link to trade if executed
+    trade_id = Column(UUID(as_uuid=True), ForeignKey("trades.id"))
+
+    def __repr__(self):
+        return f"<MLFeatureLog({self.timestamp}, label={self.label})>"

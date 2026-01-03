@@ -25,6 +25,8 @@ else:
         echo=False,
         pool_size=settings.db_pool_size,
         max_overflow=settings.db_max_overflow,
+        pool_pre_ping=True,  # Check connection health before using
+        pool_recycle=3600,    # Recycle connections every hour
     )
 
 # Create session factory
@@ -37,21 +39,49 @@ SessionLocal = sessionmaker(
 
 def init_db():
     """Initialize database - create all tables and seed symbols"""
-    try:
-        Base.metadata.create_all(bind=engine)
-        logger.info("Database initialized successfully")
-        
-        # Seed FNO symbols after tables are created
-        db = SessionLocal()
+    import time
+    max_retries = 5
+    retry_delay = 5
+    
+    for attempt in range(max_retries):
         try:
-            from .seed_symbols import seed_symbols
-            added = seed_symbols(db, use_api=False)  # use_api=False to use our FNO_SYMBOLS list
-            logger.info(f"✅ Seeded {added} FNO symbols into database")
-        finally:
-            db.close()
+            Base.metadata.create_all(bind=engine)
+            logger.info("Database initialized successfully")
+            break
+        except Exception as e:
+            if attempt == max_retries - 1:
+                logger.error(f"❌ Failed to initialize database after {max_retries} attempts: {e}")
+                raise
+            logger.warning(f"⚠️ Database initialization attempt {attempt+1} failed: {e}. Retrying in {retry_delay}s...")
+            time.sleep(retry_delay)
             
+    # Seed FNO symbols after tables are created
+    db = SessionLocal()
+    try:
+        # Verify schema (check if tick_id is nullable in signals table)
+        from sqlalchemy import inspect, text
+        inspector = inspect(engine)
+        if 'signals' in inspector.get_table_names():
+            columns = inspector.get_columns('signals')
+            for col in columns:
+                if col['name'] == 'tick_id':
+                    if not col['nullable']:
+                        logger.warning("🚨 SCHEMA ALERT: 'tick_id' is NOT NULL. Attempting auto-fix...")
+                        try:
+                            with engine.connect() as conn:
+                                conn.execute(text("ALTER TABLE signals ALTER COLUMN tick_id DROP NOT NULL"))
+                                conn.commit()
+                            logger.info("✅ SCHEMA FIX: 'tick_id' is now nullable")
+                        except Exception as fix_err:
+                            logger.error(f"❌ Failed to auto-fix schema: {fix_err}")
+        
+        from .seed_symbols import seed_symbols
+        added = seed_symbols(db, use_api=False)  # use_api=False to use our FNO_SYMBOLS list
+        logger.info(f"✅ Seeded {added} FNO symbols into database")
     except Exception as e:
         logger.warning(f"Database initialization warning (app will continue): {e}")
+    finally:
+        db.close()
         # Don't raise - allow app to start even if DB connection fails
         # This is useful for testing and verification
 

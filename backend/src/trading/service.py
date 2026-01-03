@@ -20,6 +20,7 @@ from .candle_manager import candle_manager
 from .indicators import IndicatorCalculator
 from .strategy import ScalpingStrategy
 from .paper_trading_manager import paper_trading_manager
+from ..signals.ml_pipeline import ml_pipeline
 
 class TradingService:
     """
@@ -70,6 +71,17 @@ class TradingService:
             if signal_data:
                 logger.info(f"🚀 SCALPING SIGNAL for {symbol}: {signal_data['side']} | {signal_data['reason']}")
                 
+                # Log features for ML training
+                features = df.iloc[-1].to_dict()
+                # Remove non-numeric or redundant columns for ML
+                features = {k: v for k, v in features.items() if isinstance(v, (int, float))}
+                
+                ml_pipeline.log_features(
+                    symbol=symbol,
+                    features=features,
+                    signal_type=signal_data['side']
+                )
+                
                 # Handle signal asynchronously
                 asyncio.create_task(self.handle_scalping_signal(symbol, signal_data, current_price))
                 
@@ -85,17 +97,31 @@ class TradingService:
 
         side = signal_data['side']
         reason = signal_data['reason']
+        atr = signal_data.get('atr', 0)
         
         # Calculate SL/TP
-        sl_pct = settings.scalping_stop_loss_percent
-        tp_pct = settings.scalping_take_profit_percent
-        
-        if side == 'BUY':
-            sl_price = price * (1 - sl_pct)
-            tp_price = price * (1 + tp_pct)
-        else: # SELL
-            sl_price = price * (1 + sl_pct)
-            tp_price = price * (1 - tp_pct)
+        # Use ATR for dynamic SL/TP if available, else fallback to fixed percent
+        if atr > 0:
+            # Typical scalping: SL = multiplier * ATR
+            sl_dist = atr * settings.atr_multiplier_sl
+            tp_dist = atr * settings.atr_multiplier_tp
+            
+            if side == 'BUY':
+                sl_price = price - sl_dist
+                tp_price = price + tp_dist
+            else: # SELL
+                sl_price = price + sl_dist
+                tp_price = price - tp_dist
+        else:
+            sl_pct = settings.scalping_stop_loss_percent
+            tp_pct = settings.scalping_take_profit_percent
+            
+            if side == 'BUY':
+                sl_price = price * (1 - sl_pct)
+                tp_price = price * (1 + tp_pct)
+            else: # SELL
+                sl_price = price * (1 + sl_pct)
+                tp_price = price * (1 - tp_pct)
             
         # Calculate Quantity
         capital = settings.scalping_capital_allocation

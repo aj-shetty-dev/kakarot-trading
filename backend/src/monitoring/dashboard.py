@@ -22,12 +22,33 @@ def fetch_status():
     except:
         return None
 
+def fetch_ml_stats():
+    try:
+        response = requests.get(f"{API_URL}/ml-stats", timeout=2)
+        return response.json()
+    except:
+        return None
+
 def update_settings(payload):
     try:
         response = requests.post(f"{API_URL}/settings", json=payload, timeout=5)
         return response.json()
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+def exchange_token(code):
+    try:
+        response = requests.post(f"{API_URL}/exchange-token", json={"code": code}, timeout=10)
+        return response.json()
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+def get_login_url():
+    try:
+        response = requests.get(f"{API_URL}/login-url", timeout=2)
+        return response.json().get("url")
+    except:
+        return None
 
 # Sidebar
 st.sidebar.title("🚀 Upstox Bot")
@@ -46,7 +67,7 @@ refresh_rate = st.sidebar.slider("Refresh Rate (seconds)", 1, 30, 10)
 st.title("📈 Trading System Dashboard")
 
 # Tabs
-tab1, tab2 = st.tabs(["📊 Status", "⚙️ Settings"])
+tab1, tab2, tab3 = st.tabs(["📊 Status", "🧠 AI Training Data", "⚙️ Settings"])
 
 with tab1:
     # Top Row: Status Cards
@@ -133,6 +154,48 @@ with tab1:
             st.rerun()
 
 with tab2:
+    st.header("🧠 AI Training Data Collection")
+    ml_stats = fetch_ml_stats()
+    
+    if ml_stats:
+        # Progress Bar
+        progress = ml_stats["progress_percent"] / 100
+        st.write(f"### Data Collection Progress: {ml_stats['labeled_samples']} / 100 samples")
+        st.progress(progress)
+        
+        if ml_stats["ready_for_training"]:
+            st.success("✅ **Ready for Training!** We have enough data to build the Signal Validation Agent.")
+            if st.button("🚀 Start Model Training (Local)"):
+                st.info("Training process started in background. Check logs for details.")
+        else:
+            st.info(f"⏳ **Collecting Data:** Need {100 - ml_stats['labeled_samples']} more labeled samples to start training.")
+
+        # Stats Cards
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Total Signals", ml_stats["total_samples"])
+        col2.metric("Labeled (Win/Loss)", ml_stats["labeled_samples"])
+        col3.metric("Win Rate", f"{ml_stats['win_rate']:.1f}%")
+        col4.metric("Pending Outcome", ml_stats["pending_samples"])
+
+        # Breakdown
+        st.markdown("---")
+        col_a, col_b = st.columns(2)
+        
+        with col_a:
+            st.markdown("#### 📈 Signal Breakdown")
+            st.write(f"**BUY Signals:** {ml_stats['buy_samples']}")
+            st.write(f"**SELL Signals:** {ml_stats['sell_samples']}")
+            
+        with col_b:
+            st.markdown("#### 🏆 Outcome Breakdown")
+            st.write(f"**Wins:** {ml_stats['wins']}")
+            st.write(f"**Losses:** {ml_stats['losses']}")
+            
+        st.caption("Note: Samples are only 'labeled' once the trade is closed (either TP or SL hit).")
+    else:
+        st.warning("Could not fetch ML statistics.")
+
+with tab3:
     st.subheader("⚙️ Application Settings")
     
     # Token Expiry Info in Settings
@@ -147,12 +210,37 @@ with tab2:
     st.info("Changes here will be saved to config.json and applied immediately.")
     
     if status_data and "settings" in status_data:
+        # --- NEW: Direct Token Update ---
+        st.markdown("### ⚡ Daily Token Update")
+        st.write("Paste your new **Access Token** here to refresh the connection and restart the bot.")
+        
+        col_a, col_b = st.columns([1, 3])
+        
+        login_url = get_login_url()
+        if login_url:
+            col_a.link_button("1. Get Token", login_url, type="secondary", use_container_width=True, help="Opens Upstox login to help you generate a token.")
+        
+        with col_b:
+            direct_token = st.text_input("2. Paste Access Token", placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...", label_visibility="collapsed")
+            if st.button("3. Apply Token & Restart Bot", type="primary", use_container_width=True, disabled=not direct_token):
+                with st.spinner("Updating token and restarting services..."):
+                    payload = {"upstox_access_token": direct_token.strip()}
+                    res = update_settings(payload)
+                    if res.get("status") == "success":
+                        st.success("✅ Token updated! Bot is restarting...")
+                        time.sleep(2)
+                        st.rerun()
+                    else:
+                        st.error(f"Error: {res.get('message')}")
+        
+        st.markdown("---")
+        
         with st.form("settings_form"):
-            st.markdown("### 🔑 Authentication")
-            # Show masked token from API
+            st.markdown("### ⚙️ System Configuration")
+            
+            # Show current token status
             current_masked_token = status_data.get("environment", {}).get("upstox_access_token", "None")
-            st.write(f"**Current Token:** `{current_masked_token}`")
-            new_token = st.text_area("New Upstox Access Token", value="", help="Paste your new daily access token here. Leave empty to keep current.")
+            st.write(f"**Active Token:** `{current_masked_token}`")
             
             st.markdown("### 🛡️ Risk Management")
             col1, col2 = st.columns(2)
@@ -183,10 +271,6 @@ with tab2:
                     "auto_start_stop": auto_start
                 }
                 
-                # Only update token if a new one is provided
-                if new_token.strip():
-                    payload["upstox_access_token"] = new_token.strip()
-                    
                 result = update_settings(payload)
                 if result.get("status") == "success":
                     st.success("✅ Settings updated successfully!")

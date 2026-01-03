@@ -42,7 +42,8 @@ def test_indicators():
     
     print(df_ind.tail())
     
-    assert 'ema_9' in df_ind.columns
+    assert 'ema_fast' in df_ind.columns
+    assert 'ema_slow' in df_ind.columns
     assert 'rsi' in df_ind.columns
     assert 'vwap' in df_ind.columns
     assert 'bb_upper' in df_ind.columns

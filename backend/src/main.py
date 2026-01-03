@@ -153,14 +153,46 @@ app.include_router(monitoring.router)
 # ========== HEALTH CHECK ==========
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
+    """
+    Health check endpoint for monitoring
+    Checks DB, Redis, and Upstox API connectivity
+    """
+    from .data.database import engine
+    from sqlalchemy import text
+    from .config.timezone import ist_now
+    import httpx
+    
     ws_service = get_websocket_service()
-    return {
+    health_status = {
         "status": "healthy",
-        "environment": settings.environment,
-        "paper_trading": settings.is_paper_trading,
-        "websocket_connected": ws_service.is_healthy() if ws_service else False,
+        "database": "unknown",
+        "upstox_api": "unknown",
+        "websocket": "connected" if ws_service and ws_service.is_healthy() else "disconnected",
+        "timestamp": ist_now().isoformat()
     }
+    
+    # Check Database
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        health_status["database"] = "connected"
+    except Exception as e:
+        health_status["database"] = f"error: {str(e)}"
+        health_status["status"] = "unhealthy"
+        
+    # Check Upstox API (simple ping to public endpoint)
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            # Use a public endpoint or one that doesn't require heavy auth for a ping
+            response = await client.get("https://api.upstox.com/v2/market-quote/quotes", params={"symbol": "NSE_EQ|INE002A01018"})
+            if response.status_code in [200, 401]: # 401 is fine, means API is up but we need auth
+                health_status["upstox_api"] = "reachable"
+            else:
+                health_status["upstox_api"] = f"error: HTTP {response.status_code}"
+    except Exception as e:
+        health_status["upstox_api"] = f"error: {str(e)}"
+        
+    return health_status
 
 
 @app.get("/")

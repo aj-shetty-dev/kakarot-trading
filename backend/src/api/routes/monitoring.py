@@ -16,8 +16,98 @@ from ...config.timezone import ist_now
 from ...config.auth_utils import get_token_expiry
 from ...trading.session_manager import session_manager
 from ...websocket.service import get_websocket_service
+from ...data.database import SessionLocal
+from ...data.models import MLFeatureLog
+import httpx
 
 router = APIRouter(prefix="/api/v1/monitoring", tags=["monitoring"])
+
+@router.get("/login-url")
+async def get_login_url() -> Dict[str, str]:
+    """Generate the Upstox login URL for the user"""
+    # Default redirect URI if not specified
+    redirect_uri = "https://localhost:8000/callback"
+    url = (
+        f"https://api.upstox.com/v2/login/authorization/dialog"
+        f"?response_type=code&client_id={settings.upstox_api_key}"
+        f"&redirect_uri={redirect_uri}"
+    )
+    return {"url": url}
+
+@router.post("/exchange-token")
+async def exchange_token(background_tasks: BackgroundTasks, data: Dict[str, str] = Body(...)):
+    """Exchange auth code for access token and update settings"""
+    auth_code = data.get("code")
+    if not auth_code:
+        raise HTTPException(status_code=400, detail="Auth code is required")
+    
+    redirect_uri = data.get("redirect_uri", "https://localhost:8000/callback")
+    
+    url = "https://api.upstox.com/v2/login/authorization/token"
+    payload = {
+        "code": auth_code,
+        "client_id": settings.upstox_api_key,
+        "client_secret": settings.upstox_api_secret,
+        "redirect_uri": redirect_uri,
+        "grant_type": "authorization_code"
+    }
+    
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(url, data=payload, headers={"Accept": "application/json"})
+            result = response.json()
+            
+            if response.status_code == 200 and "access_token" in result:
+                access_token = result["access_token"]
+                
+                # Update settings via the existing update_settings logic
+                # We call it internally or just replicate the logic
+                await update_settings(background_tasks, {"upstox_access_token": access_token})
+                
+                return {
+                    "status": "success", 
+                    "message": "Token exchanged and updated successfully. Session restarting...",
+                    "expires_in": result.get("expires_in")
+                }
+            else:
+                error_msg = result.get("errors", [{}])[0].get("message", "Unknown error")
+                raise HTTPException(status_code=response.status_code, detail=f"Upstox Error: {error_msg}")
+                
+        except httpx.RequestError as e:
+            raise HTTPException(status_code=500, detail=f"Network error: {str(e)}")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/ml-stats")
+async def get_ml_stats() -> Dict[str, Any]:
+    """Get statistics on collected ML data"""
+    db = SessionLocal()
+    try:
+        total_samples = db.query(MLFeatureLog).count()
+        labeled_samples = db.query(MLFeatureLog).filter(MLFeatureLog.label.isnot(None)).count()
+        wins = db.query(MLFeatureLog).filter(MLFeatureLog.label == 1).count()
+        losses = db.query(MLFeatureLog).filter(MLFeatureLog.label == 0).count()
+        
+        # Get samples by signal type
+        buy_samples = db.query(MLFeatureLog).filter(MLFeatureLog.signal_type == 'BUY').count()
+        sell_samples = db.query(MLFeatureLog).filter(MLFeatureLog.signal_type == 'SELL').count()
+        
+        return {
+            "total_samples": total_samples,
+            "labeled_samples": labeled_samples,
+            "pending_samples": total_samples - labeled_samples,
+            "wins": wins,
+            "losses": losses,
+            "win_rate": (wins / labeled_samples * 100) if labeled_samples > 0 else 0,
+            "buy_samples": buy_samples,
+            "sell_samples": sell_samples,
+            "ready_for_training": labeled_samples >= 100,
+            "progress_percent": min(100, (labeled_samples / 100) * 100)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
 
 @router.get("/status")
 async def get_system_status() -> Dict[str, Any]:

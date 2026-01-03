@@ -314,6 +314,10 @@ class MarketSessionManager:
                     # The connect() method already sent the "WebSocket Connected" message
                     await shutdown_websocket()
                     logger.info("✅ Token verified successfully via temporary connection")
+                    await telegram.send_message(
+                        "✅ <b>Token Verified!</b>\n"
+                        "The new token is valid. The bot will automatically start trading at 09:15 IST on the next market day."
+                    )
                 else:
                     # The connect() method already sent an error message if it was a 401
                     logger.error("❌ Token verification failed")

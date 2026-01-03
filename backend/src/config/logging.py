@@ -84,6 +84,29 @@ def setup_logging():
     errors_handler.setFormatter(logging.Formatter(LOG_FORMAT, datefmt=LOG_DATE_FORMAT))
     root_logger.addHandler(errors_handler)
 
+    # Add Telegram Alert Handler for CRITICAL errors
+    if settings.enable_notifications and settings.telegram_bot_token:
+        try:
+            from ..notifications.telegram import get_telegram_service
+            telegram = get_telegram_service(settings)
+            
+            class TelegramAlertHandler(logging.Handler):
+                def emit(self, record):
+                    if record.levelno >= logging.CRITICAL:
+                        message = f"🚨 <b>CRITICAL ALERT</b>\n\n" \
+                                  f"<b>Level:</b> {record.levelname}\n" \
+                                  f"<b>Module:</b> {record.module}\n" \
+                                  f"<b>Message:</b> {record.getMessage()}"
+                        # Use sync version to avoid async issues in logging
+                        telegram.send_message_sync(message)
+            
+            alert_handler = TelegramAlertHandler()
+            alert_handler.setLevel(logging.CRITICAL)
+            root_logger.addHandler(alert_handler)
+            root_logger.info("✅ Telegram Alert Handler initialized for CRITICAL errors")
+        except Exception as e:
+            root_logger.error(f"❌ Failed to initialize Telegram Alert Handler: {e}")
+
     return root_logger
 
 

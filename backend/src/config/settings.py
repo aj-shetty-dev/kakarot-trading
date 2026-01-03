@@ -53,6 +53,22 @@ class Settings(BaseSettings):
     scalping_take_profit_percent: float = 0.01
     scalping_stop_loss_percent: float = 0.005
     scalping_capital_allocation: float = 10000.0
+    
+    # Strategy Parameters
+    ema_fast: int = 9
+    ema_slow: int = 21
+    rsi_period: int = 14
+    rsi_overbought: int = 70
+    rsi_oversold: int = 30
+    bb_period: int = 20
+    bb_std: float = 2.0
+    atr_period: int = 14
+    atr_multiplier_sl: float = 1.5
+    atr_multiplier_tp: float = 2.0
+    adx_period: int = 14
+    adx_threshold: float = 20.0
+    volume_ma_period: int = 20
+    volume_spike_multiplier: float = 2.0
 
     # ========== DATABASE ==========
     database_url: str = "sqlite:///./upstox_trading.db"

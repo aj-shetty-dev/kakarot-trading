@@ -4,6 +4,8 @@ from datetime import datetime, timedelta
 import pandas as pd
 from typing import Dict, List, Optional
 from ..websocket.data_models import TickData
+from ..data.database import SessionLocal
+from ..data.models import Candle, Symbol
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +22,8 @@ class CandleManager:
         self.current_candles: Dict[str, Dict[str, Dict]] = defaultdict(lambda: defaultdict(dict))
         # Track last volume to calculate delta
         self.last_volumes: Dict[str, int] = defaultdict(int)
+        # Cache for symbol IDs
+        self.symbol_id_cache: Dict[str, str] = {}
         # Callbacks
         self.on_candle_close_callbacks = []
 
@@ -64,6 +68,9 @@ class CandleManager:
             closed_candle = current_candle.copy()
             self.candles[symbol]['1m'].append(closed_candle)
             
+            # Persist to database
+            self._persist_candle(symbol, '1m', closed_candle)
+            
             # Trigger callbacks
             for callback in self.on_candle_close_callbacks:
                 try:
@@ -91,6 +98,51 @@ class CandleManager:
         candle['low'] = min(candle['low'], tick.last_price)
         candle['close'] = tick.last_price
         candle['volume'] += volume
+
+    def _persist_candle(self, symbol: str, timeframe: str, candle_data: Dict):
+        """
+        Save closed candle to database.
+        """
+        db = SessionLocal()
+        try:
+            # Get symbol ID from cache or DB
+            symbol_id = self.symbol_id_cache.get(symbol)
+            if not symbol_id:
+                # Upstox V3 uses instrument_key as symbol in ticks
+                # We need to find the symbol record
+                # First check if it's a base symbol
+                sym_record = db.query(Symbol).filter(Symbol.symbol == symbol).first()
+                if not sym_record:
+                    # Check if it's an instrument_key in SubscribedOption
+                    from ..data.models import SubscribedOption
+                    opt = db.query(SubscribedOption).filter(SubscribedOption.instrument_key == symbol).first()
+                    if opt:
+                        sym_record = db.query(Symbol).filter(Symbol.symbol == opt.symbol).first()
+                
+                if sym_record:
+                    symbol_id = sym_record.id
+                    self.symbol_id_cache[symbol] = symbol_id
+                else:
+                    logger.warning(f"Could not find symbol record for {symbol} to persist candle")
+                    return
+
+            candle = Candle(
+                symbol_id=symbol_id,
+                timeframe=timeframe,
+                timestamp=candle_data['timestamp'],
+                open=candle_data['open'],
+                high=candle_data['high'],
+                low=candle_data['low'],
+                close=candle_data['close'],
+                volume=candle_data['volume']
+            )
+            db.add(candle)
+            db.commit()
+        except Exception as e:
+            logger.error(f"Error persisting candle for {symbol}: {e}")
+            db.rollback()
+        finally:
+            db.close()
 
     def get_candles(self, symbol: str, timeframe: str = '1m') -> pd.DataFrame:
         """
