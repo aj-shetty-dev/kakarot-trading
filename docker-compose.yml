@@ -45,6 +45,9 @@ services:
     environment:
       REDIS_URL: redis://redis:6379
       TZ: Asia/Kolkata
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     ports:
       - "8000:8000"
     depends_on:

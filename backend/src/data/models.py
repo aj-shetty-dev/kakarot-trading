@@ -187,6 +187,7 @@ class Trade(Base):
     order_type = Column(SQLEnum(OrderType), default=OrderType.MARKET)
     order_side = Column(SQLEnum(OrderSide), nullable=False)
     status = Column(SQLEnum(TradeStatus), default=TradeStatus.OPEN)
+    trade_type = Column(String(20), default="LIVE") # LIVE, PAPER, SCALPING
 
     # Execution details
     quantity = Column(Integer, nullable=False)
@@ -207,7 +208,7 @@ class Trade(Base):
     # Execution timestamps
     created_at = Column(DateTime, default=ist_now, index=True)
     entry_time = Column(DateTime)
-    exit_time = Column(DateTime)
+    exit_time = Column(DateTime, index=True)
 
     # Upstox order IDs
     upstox_order_id = Column(String(50))
@@ -218,7 +219,7 @@ class Trade(Base):
     trade_metadata = Column(JSON, default={})
 
     def __repr__(self):
-        return f"<Trade({self.symbol}, {self.order_side}, {self.status})>"
+        return f"<Trade({self.symbol}, {self.order_side}, {self.status}, {self.trade_type})>"
 
 
 class Position(Base):

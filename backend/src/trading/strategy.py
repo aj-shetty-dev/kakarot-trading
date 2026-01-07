@@ -25,6 +25,7 @@ class ScalpingStrategy:
         # Indicators
         ema_fast = curr['ema_fast']
         ema_slow = curr['ema_slow']
+        ema_trend = curr['ema_trend']
         prev_ema_fast = prev['ema_fast']
         prev_ema_slow = prev['ema_slow']
         
@@ -41,64 +42,71 @@ class ScalpingStrategy:
         
         # Common Filters
         # 1. ADX > threshold (Ensure trend strength, avoid chop)
-        strong_trend = adx > settings.adx_threshold
+        # Increased from 20 to 25 for higher quality signals
+        strong_trend = adx > 25.0
         
         if not strong_trend:
             if settings.debug:
-                logger.debug(f"Signal rejected for {df.index[-1]}: ADX {adx:.2f} < {settings.adx_threshold}")
+                logger.debug(f"Signal rejected for {df.index[-1]}: ADX {adx:.2f} < 25.0")
+            return None
+
+        # 2. ATR Filter: Ensure volatility is high enough to cover brokerage
+        # If ATR is too low, the price move might be smaller than the ₹40 round-trip cost
+        if atr < (close * 0.002): # Minimum 0.2% volatility
+            if settings.debug:
+                logger.debug(f"Signal rejected for {df.index[-1]}: ATR {atr:.2f} too low")
             return None
 
         # BUY SIGNAL
-        # 1. EMA Crossover: fast crosses above slow
+        # 1. Trend Filter: Price must be above long-term EMA
+        above_trend = close > ema_trend
+        
+        # 2. EMA Crossover: fast crosses above slow
         ema_crossover_up = (prev_ema_fast <= prev_ema_slow) and (ema_fast > ema_slow)
         
-        # 2. Price above VWAP (Bullish trend)
+        # 3. Price above VWAP (Bullish trend)
         above_vwap = close > vwap
         
-        # 3. RSI not overbought (Room to grow)
-        rsi_bullish = settings.rsi_oversold + 10 < rsi < settings.rsi_overbought
+        # 4. RSI in "Sweet Spot" (Momentum)
+        # Narrowed from 30-70 to 50-65 for higher probability buy
+        rsi_bullish = 50 < rsi < 65
         
-        # 4. Not overextended (Price < Upper BB)
+        # 5. Not overextended (Price < Upper BB)
         not_overextended_buy = close < bb_upper
         
-        # 5. Volume Spike (Confirmation)
+        # 6. Stricter Volume Spike (3x instead of 2x)
+        volume_ma = df['volume'].rolling(window=20).mean().iloc[-1]
+        significant_volume = curr['volume'] > (volume_ma * 3.0)
         
-        if ema_crossover_up and above_vwap and rsi_bullish and volume_spike and not_overextended_buy:
+        if above_trend and ema_crossover_up and above_vwap and rsi_bullish and significant_volume and not_overextended_buy:
             return {
                 'side': 'BUY',
-                'reason': f"EMA Cross Up, Price > VWAP, RSI {rsi:.2f}, ADX {adx:.2f}, Vol Spike",
+                'reason': f"High-Quality BUY: Trend+, EMA Cross, VWAP+, RSI {rsi:.2f}, Vol 3x",
                 'atr': atr
             }
-        elif settings.debug and ema_crossover_up:
-            logger.debug(f"BUY near-miss: VWAP:{above_vwap}, RSI:{rsi_bullish}, Vol:{volume_spike}, BB:{not_overextended_buy}")
             
         # SELL SIGNAL
-        # 1. EMA Crossover: fast crosses below slow
+        # 1. Trend Filter: Price must be below long-term EMA
+        below_trend = close < ema_trend
+        
+        # 2. EMA Crossover: fast crosses below slow
         ema_crossover_down = (prev_ema_fast >= prev_ema_slow) and (ema_fast < ema_slow)
         
-        # 2. Price below VWAP (Bearish trend)
+        # 3. Price below VWAP (Bearish trend)
         below_vwap = close < vwap
         
-        # 3. RSI not oversold (Room to fall)
-        rsi_bearish = settings.rsi_oversold < rsi < settings.rsi_overbought - 10
+        # 4. RSI in "Sweet Spot" (Momentum)
+        # Narrowed from 30-70 to 35-50 for higher probability sell
+        rsi_bearish = 35 < rsi < 50
         
-        # 4. Not overextended (Price > Lower BB)
+        # 5. Not overextended (Price > Lower BB)
         not_overextended_sell = close > bb_lower
         
-        if ema_crossover_down and below_vwap and rsi_bearish and volume_spike and not_overextended_sell:
+        if below_trend and ema_crossover_down and below_vwap and rsi_bearish and significant_volume and not_overextended_sell:
             return {
                 'side': 'SELL',
-                'reason': f"EMA Cross Down, Price < VWAP, RSI {rsi:.2f}, ADX {adx:.2f}, Vol Spike",
+                'reason': f"High-Quality SELL: Trend-, EMA Cross, VWAP-, RSI {rsi:.2f}, Vol 3x",
                 'atr': atr
-            }
-            
-        return None
-        rsi_bearish = 30 < rsi < 60
-        
-        if ema_crossover_down and below_vwap and rsi_bearish and volume_spike:
-            return {
-                'side': 'SELL',
-                'reason': f"EMA Crossover Down, Price < VWAP, RSI {rsi:.2f}, Vol Spike"
             }
             
         return None

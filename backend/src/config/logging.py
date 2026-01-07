@@ -92,18 +92,22 @@ def setup_logging():
             
             class TelegramAlertHandler(logging.Handler):
                 def emit(self, record):
-                    if record.levelno >= logging.CRITICAL:
-                        message = f"🚨 <b>CRITICAL ALERT</b>\n\n" \
+                    # Alert on ERROR and CRITICAL
+                    if record.levelno >= logging.ERROR:
+                        emoji = "🚨" if record.levelno == logging.CRITICAL else "⚠️"
+                        
+                        message = f"{emoji} <b>SYSTEM ALERT</b>\n\n" \
                                   f"<b>Level:</b> {record.levelname}\n" \
                                   f"<b>Module:</b> {record.module}\n" \
                                   f"<b>Message:</b> {record.getMessage()}"
+                        
                         # Use sync version to avoid async issues in logging
                         telegram.send_message_sync(message)
             
             alert_handler = TelegramAlertHandler()
-            alert_handler.setLevel(logging.CRITICAL)
+            alert_handler.setLevel(logging.ERROR)  # Changed from CRITICAL to ERROR
             root_logger.addHandler(alert_handler)
-            root_logger.info("✅ Telegram Alert Handler initialized for CRITICAL errors")
+            root_logger.info("✅ Telegram Alert Handler initialized for ERROR+CRITICAL errors")
         except Exception as e:
             root_logger.error(f"❌ Failed to initialize Telegram Alert Handler: {e}")
 

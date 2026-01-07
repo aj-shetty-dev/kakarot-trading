@@ -24,6 +24,7 @@ class IndicatorCalculator:
         # 1. EMA
         df['ema_fast'] = ta.trend.EMAIndicator(close=df['close'], window=settings.ema_fast).ema_indicator()
         df['ema_slow'] = ta.trend.EMAIndicator(close=df['close'], window=settings.ema_slow).ema_indicator()
+        df['ema_trend'] = ta.trend.EMAIndicator(close=df['close'], window=settings.ema_trend).ema_indicator()
         
         # 2. RSI
         df['rsi'] = ta.momentum.RSIIndicator(close=df['close'], window=settings.rsi_period).rsi()

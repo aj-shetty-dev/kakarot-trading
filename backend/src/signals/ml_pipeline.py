@@ -56,6 +56,16 @@ class MLDataPipeline:
         """
         Update the label for a logged feature set based on trade outcome.
         """
+        # Validate if trade_id is a valid UUID string
+        import uuid
+        try:
+            uuid.UUID(str(trade_id))
+        except (ValueError, TypeError):
+            # If not a valid UUID, we can't query by trade_id in the DB
+            # This happens for paper trades that use symbol as ID
+            logger.debug(f"Skipping ML outcome update for non-UUID trade_id: {trade_id}")
+            return
+
         db = SessionLocal()
         try:
             log_entry = db.query(MLFeatureLog).filter(MLFeatureLog.trade_id == trade_id).first()

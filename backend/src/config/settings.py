@@ -22,7 +22,9 @@ class Settings(BaseSettings):
     account_size: float = 100_000  # ₹1,00,000
     risk_per_trade: float = 0.05  # 5%
     daily_loss_limit: float = 0.02  # 2% per day
+    daily_profit_target: float = 0.05  # 5% per day
     max_concurrent_positions: int = 3
+    max_trades_per_day: int = 15
 
     # ========== POSITION SIZING ==========
     position_size_percent: float = 0.30  # 30% of account
@@ -33,6 +35,14 @@ class Settings(BaseSettings):
     take_profit_percent: float = 0.04  # 4%
     trailing_stop_percent: float = 0.02  # 2%
     stop_loss_percent: float = 0.05  # 5%
+
+    # ========== BROKERAGE & CHARGES (Upstox) ==========
+    brokerage_per_order: float = 20.0  # ₹20 per order
+    stt_percent_sell: float = 0.0005  # 0.05% on sell side
+    txn_charges_percent: float = 0.00053  # ~0.053% (NSE)
+    gst_percent: float = 0.18  # 18% on (Brokerage + Txn)
+    sebi_charges_percent: float = 0.000001  # 0.0001%
+    stamp_duty_percent_buy: float = 0.00003  # 0.003% on buy side
 
     # ========== RATE LIMITING ==========
     rate_limit_orders_per_minute: int = 10
@@ -50,13 +60,14 @@ class Settings(BaseSettings):
     # ========== SCALPING STRATEGY ==========
     scalping_enabled: bool = True
     scalping_timeframe: str = "1m"
-    scalping_take_profit_percent: float = 0.01
-    scalping_stop_loss_percent: float = 0.005
+    scalping_take_profit_percent: float = 0.015
+    scalping_stop_loss_percent: float = 0.007
     scalping_capital_allocation: float = 10000.0
     
     # Strategy Parameters
     ema_fast: int = 9
     ema_slow: int = 21
+    ema_trend: int = 50
     rsi_period: int = 14
     rsi_overbought: int = 70
     rsi_oversold: int = 30
@@ -105,10 +116,10 @@ class Settings(BaseSettings):
             try:
                 with open(config_path, "r") as f:
                     config_data = json.load(f)
-                    # Merge config_data into data, but let data (env vars) take precedence
+                    # Merge config_data into data
+                    # config.json takes precedence over .env for user-editable settings
                     for key, value in config_data.items():
-                        if key not in data or data[key] is None:
-                            data[key] = value
+                        data[key] = value
             except Exception as e:
                 print(f"Warning: Could not load config.json: {e}")
 

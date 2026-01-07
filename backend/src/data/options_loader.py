@@ -699,6 +699,21 @@ async def load_options_at_startup() -> int:
     db = SessionLocal()
     try:
         count = await options_loader.load_and_store_options(db)
+        
+        # Pre-load candles for everything we just subscribed to
+        from ..trading.candle_manager import candle_manager
+        from ..data.models import SubscribedOption
+        
+        # Get all active instrument keys
+        instruments = db.query(SubscribedOption.instrument_key).all()
+        keys = [k[0] for k in instruments if k[0]]
+        
+        if keys:
+            logger.info(f"📚 Pre-loading candles for {len(keys)} instruments...")
+            # We do this sequentially to avoid hammering DB, but it's okay during startup
+            for key in keys:
+                candle_manager.load_candles_from_db(key)
+        
         return count
     finally:
         db.close()

@@ -8,19 +8,79 @@ from typing import Dict, Any, List
 import os
 import json
 import base64
+import time
 from datetime import datetime
 from pathlib import Path
 
 from ...config.settings import settings
 from ...config.timezone import ist_now
 from ...config.auth_utils import get_token_expiry
+from ...config.logging import logger
 from ...trading.session_manager import session_manager
 from ...websocket.service import get_websocket_service
 from ...data.database import SessionLocal
-from ...data.models import MLFeatureLog
+from ...data.models import MLFeatureLog, Account, Trade
 import httpx
 
 router = APIRouter(prefix="/api/v1/monitoring", tags=["monitoring"])
+
+def get_account_summary(db: SessionLocal) -> Dict[str, Any]:
+    """Get current account summary from DB"""
+    from datetime import time, timedelta
+    from ...config.constants import TradeStatus
+    now = ist_now()
+    today = now.date()
+    today_start = datetime.combine(today, time.min)
+    
+    # All statuses that indicate a completed trade
+    COMPLETED_STATUSES = [
+        TradeStatus.CLOSED, 
+        TradeStatus.STOPPED_OUT, 
+        TradeStatus.TAKE_PROFIT, 
+        TradeStatus.TRAILING_SL
+    ]
+    
+    # Get or create today's account record
+    account = db.query(Account).filter(Account.date >= today_start).first()
+    if not account:
+        # Calculate total P&L from all time up to yesterday
+        yesterday_end = today_start
+        historical_pnl_query = db.query(Trade).filter(
+            Trade.status.in_(COMPLETED_STATUSES),
+            Trade.exit_time < yesterday_end
+        ).all()
+        historical_pnl = sum(t.pnl for t in historical_pnl_query if t.pnl is not None)
+        
+        # Opening balance for today = Initial Capital + All previous profits
+        opening_balance = settings.account_size + historical_pnl
+        
+        account = Account(
+            available_balance=opening_balance,
+            date=now
+        )
+        db.add(account)
+        db.commit()
+        db.refresh(account)
+    
+    # Calculate daily P&L from all trades (LIVE and SCALPING)
+    # Using filter on COMPLETED_STATUSES to ensure we only count finished trades
+    trades = db.query(Trade).filter(
+        Trade.created_at >= today_start,
+        Trade.status.in_(COMPLETED_STATUSES)
+    ).all()
+    daily_pnl = sum(t.pnl for t in trades if t.pnl is not None)
+    
+    # Calculate cumulative P&L for all time to show total equity
+    total_pnl_query = db.query(Trade).filter(Trade.status.in_(COMPLETED_STATUSES)).all()
+    total_pnl = sum(t.pnl for t in total_pnl_query if t.pnl is not None)
+    
+    return {
+        "balance": account.available_balance,
+        "equity": settings.account_size + total_pnl,
+        "daily_pnl": daily_pnl,
+        "daily_pnl_percent": (daily_pnl / account.available_balance * 100) if account.available_balance > 0 else 0,
+        "trades_today": len(trades)
+    }
 
 @router.get("/login-url")
 async def get_login_url() -> Dict[str, str]:
@@ -115,9 +175,16 @@ async def get_system_status() -> Dict[str, Any]:
     ws_service = get_websocket_service()
     token_info = get_token_expiry(settings.upstox_access_token)
     
+    db = SessionLocal()
+    try:
+        account_summary = get_account_summary(db)
+    finally:
+        db.close()
+    
     status = {
         "timestamp": ist_now().isoformat(),
         "session": session_manager.get_status(),
+        "account": account_summary,
         "websocket": {
             "connected": ws_service.ws_client.is_connected if ws_service and ws_service.ws_client else False,
             "running": ws_service.is_running if ws_service else False,
@@ -132,6 +199,8 @@ async def get_system_status() -> Dict[str, Any]:
             "paper_trading_mode": settings.paper_trading_mode,
             "account_size": settings.account_size,
             "risk_per_trade": settings.risk_per_trade,
+            "daily_loss_limit": settings.daily_loss_limit,
+            "daily_profit_target": settings.daily_profit_target,
             "market_open_time": settings.market_open_time,
             "market_close_time": settings.market_close_time,
             "auto_start_stop": settings.auto_start_stop
@@ -146,8 +215,9 @@ async def get_system_status() -> Dict[str, Any]:
 
 @router.post("/settings")
 async def update_settings(background_tasks: BackgroundTasks, new_settings: Dict[str, Any] = Body(...)):
-    """Update application settings and persist to config.json"""
+    """Update application settings and persist to config.json and .env"""
     config_path = Path("config.json")
+    env_path = Path(".env")
     
     # Load existing config
     config_data = {}
@@ -165,6 +235,34 @@ async def update_settings(background_tasks: BackgroundTasks, new_settings: Dict[
     try:
         with open(config_path, "w") as f:
             json.dump(config_data, f, indent=4)
+        
+        # Also update .env file for credentials that matter
+        env_key_mapping = {
+            "upstox_access_token": "UPSTOX_ACCESS_TOKEN",
+            "upstox_api_key": "UPSTOX_API_KEY",
+            "upstox_api_secret": "UPSTOX_API_SECRET",
+            "upstox_client_code": "UPSTOX_CLIENT_CODE",
+        }
+        
+        # Load existing .env if it exists
+        env_vars = {}
+        if env_path.exists():
+            with open(env_path, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        key, value = line.split("=", 1)
+                        env_vars[key.strip()] = value.strip()
+        
+        # Update .env with new credentials
+        for config_key, env_key in env_key_mapping.items():
+            if config_key in new_settings:
+                env_vars[env_key] = str(new_settings[config_key])
+        
+        # Write .env file with proper formatting
+        with open(env_path, "w") as f:
+            for key, value in sorted(env_vars.items()):
+                f.write(f"{key}={value}\n")
             
         # Update runtime settings object
         token_updated = False
@@ -187,7 +285,7 @@ async def update_settings(background_tasks: BackgroundTasks, new_settings: Dict[
         if token_updated:
             background_tasks.add_task(session_manager.restart_active_session)
                 
-        return {"status": "success", "message": "Settings updated and persisted"}
+        return {"status": "success", "message": "Settings updated and persisted to config.json and .env"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save settings: {str(e)}")
 
@@ -208,6 +306,141 @@ async def get_recent_logs(lines: int = 50) -> List[str]:
             return all_lines[-lines:]
     except Exception as e:
         return [f"Error reading logs: {str(e)}"]
+
+@router.post("/emergency-close-position")
+async def emergency_close_position(data: Dict[str, Any] = Body(...)):
+    """
+    Emergency endpoint to manually close a position when WebSocket is down.
+    Used when automated monitoring can't trigger SL/TP.
+    
+    Args:
+        data: {
+            "symbol": str (required),
+            "reason": str (optional, default="emergency")
+        }
+    
+    Returns:
+        {"status": "success", "trade_id": str, "message": str}
+    """
+    try:
+        symbol = data.get("symbol")
+        reason = data.get("reason", "emergency")
+        
+        if not symbol:
+            raise HTTPException(status_code=400, detail="Symbol is required")
+        
+        db = SessionLocal()
+        
+        # Find open trade for this symbol
+        from ...config.constants import TradeStatus
+        from ...data.models import Symbol
+        
+        # First find the symbol
+        sym_obj = db.query(Symbol).filter(Symbol.symbol == symbol).first()
+        if not sym_obj:
+            db.close()
+            raise HTTPException(
+                status_code=404,
+                detail=f"Symbol {symbol} not found"
+            )
+        
+        # Then find the open trade for this symbol
+        trade = db.query(Trade).filter(
+            Trade.symbol_id == sym_obj.id,
+            Trade.status == TradeStatus.OPEN
+        ).first()
+        
+        if not trade:
+            db.close()
+            raise HTTPException(
+                status_code=404,
+                detail=f"No open trade found for {symbol}"
+            )
+        
+        logger.warning(
+            f"🚨 [EMERGENCY CLOSE] {symbol} triggered by {reason} "
+            f"at ₹{trade.current_price} (Entry: ₹{trade.entry_price})"
+        )
+        
+        # Import trading service
+        from ...trading.service import trading_service
+        
+        # Close the trade immediately
+        if reason == "stop_loss":
+            status = TradeStatus.STOPPED_OUT
+        elif reason == "take_profit":
+            status = TradeStatus.TAKE_PROFIT
+        else:
+            status = TradeStatus.CLOSED
+        
+        await trading_service.close_trade(trade, status, db)
+        
+        response = {
+            "status": "success",
+            "trade_id": trade.id,
+            "symbol": symbol,
+            "entry_price": trade.entry_price,
+            "exit_price": trade.current_price,
+            "pnl": trade.pnl if trade.pnl else 0,
+            "reason": reason,
+            "message": f"Position {symbol} closed successfully"
+        }
+        
+        db.close()
+        return response
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Emergency close failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to close position: {str(e)}")
+
+@router.get("/connection-health")
+async def connection_health():
+    """
+    Check WebSocket and network health
+    
+    Returns health status of DNS, WebSocket connection, and cached prices
+    """
+    try:
+        from ...websocket.client import get_websocket_client
+        
+        ws_client = get_websocket_client()
+        now = ist_now()
+        
+        result = {
+            "timestamp": now.isoformat(),
+            "websocket": {
+                "connected": ws_client.is_connected if ws_client else False,
+                "subscribed_symbols": len(ws_client.subscribed_symbols) if ws_client else 0,
+                "reconnect_attempts": ws_client.reconnect_attempts if ws_client else 0,
+                "network_errors": ws_client.network_error_count if ws_client else 0
+            },
+            "price_cache": {
+                "cached_symbols": len(ws_client.price_cache) if ws_client else 0,
+                "last_update": ws_client.last_cache_update_time if ws_client else None,
+                "cache_entries": {}
+            }
+        }
+        
+        # Add sample cache entries
+        if ws_client and ws_client.price_cache:
+            for symbol, data in list(ws_client.price_cache.items())[:5]:
+                age = time.time() - data["time_unix"]
+                result["price_cache"]["cache_entries"][symbol] = {
+                    "price": data["price"],
+                    "age_seconds": age,
+                    "is_stale": age > 30
+                }
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error checking connection health: {e}")
+        return {
+            "timestamp": ist_now().isoformat(),
+            "error": str(e)
+        }
 
 @router.get("/health")
 async def health_check():

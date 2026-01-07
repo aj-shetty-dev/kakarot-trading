@@ -116,6 +116,24 @@ with tab1:
             status_data["environment"]["mode"]
         )
 
+        # Account Summary Row
+        st.markdown("### 💰 Account Summary")
+        acc_col1, acc_col2, acc_col3, acc_col4 = st.columns(4)
+        
+        account = status_data.get("account", {})
+        acc_col1.metric("Opening Balance", f"₹{account.get('balance', 0):,.2f}")
+        acc_col2.metric(
+            "Current Equity", 
+            f"₹{account.get('equity', 0):,.2f}",
+            delta=f"₹{account.get('daily_pnl', 0):,.2f}"
+        )
+        acc_col3.metric(
+            "Daily P&L %", 
+            f"{account.get('daily_pnl_percent', 0):.2f}%",
+            delta=f"{account.get('daily_pnl_percent', 0):.2f}%"
+        )
+        acc_col4.metric("Trades Today", account.get('trades_today', 0))
+
         # Current Time (IST)
         st.info(f"🕒 **Current System Time (IST):** {status_data['timestamp']}")
 
@@ -252,6 +270,10 @@ with tab3:
             
             risk_pct = st.slider("Risk Per Trade (%)", 0.1, 10.0, float(settings_dict.get("risk_per_trade", 0.01) * 100)) / 100
             
+            col_risk1, col_risk2 = st.columns(2)
+            loss_limit = col_risk1.slider("Daily Loss Limit (%)", 0.5, 10.0, float(settings_dict.get("daily_loss_limit", 0.02) * 100)) / 100
+            profit_target = col_risk2.slider("Daily Profit Target (%)", 1.0, 20.0, float(settings_dict.get("daily_profit_target", 0.05) * 100)) / 100
+            
             st.markdown("### 🕒 Market Hours")
             col3, col4 = st.columns(2)
             open_time = col3.text_input("Market Open (IST)", value=settings_dict.get("market_open_time", "09:15"))
@@ -266,6 +288,8 @@ with tab3:
                     "paper_trading_mode": paper_mode,
                     "account_size": acc_size,
                     "risk_per_trade": risk_pct,
+                    "daily_loss_limit": loss_limit,
+                    "daily_profit_target": profit_target,
                     "market_open_time": open_time,
                     "market_close_time": close_time,
                     "auto_start_stop": auto_start

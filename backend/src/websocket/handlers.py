@@ -240,10 +240,12 @@ class TickDataHandler:
             bool: True if handled successfully
         """
         try:
-            # Ensure we have a database session
-            if not self.db:
-                self.db = SessionLocal()
+            self.tick_count += 1
             
+            # Apply sampling to database as well to prevent storage/performance issues
+            # Only save to DB if it's the Nth tick according to LOG_SAMPLE_RATE
+            should_save_to_db = LOG_SAMPLE_RATE == 1 or self.tick_count % LOG_SAMPLE_RATE == 0
+
             # Load cache if not loaded
             if not self._cache_loaded:
                 self._load_instrument_key_cache()
@@ -251,49 +253,51 @@ class TickDataHandler:
             # For V3: tick_data.symbol contains instrument_key (e.g., NSE_FO|60965)
             instrument_key = tick_data.symbol
             
-            # Look up symbol_id from cache
-            symbol_id = self._instrument_key_cache.get(instrument_key)
-            
-            if not symbol_id:
-                # Try direct lookup as fallback (for non-V3 format)
-                symbol = self.db.query(Symbol).filter(
-                    Symbol.symbol == instrument_key
-                ).first()
+            if should_save_to_db:
+                # Ensure we have a database session for saving
+                if not self.db:
+                    self.db = SessionLocal()
                 
-                if symbol:
-                    symbol_id = symbol.id
-                    self._instrument_key_cache[instrument_key] = symbol_id
-                else:
-                    logger.debug(f"Instrument key {instrument_key} not found in cache or Symbol table")
-                    return False
+                # Look up symbol_id from cache
+                symbol_id = self._instrument_key_cache.get(instrument_key)
+                
+                if not symbol_id:
+                    # Try direct lookup as fallback (for non-V3 format)
+                    symbol = self.db.query(Symbol).filter(
+                        Symbol.symbol == instrument_key
+                    ).first()
+                    
+                    if symbol:
+                        symbol_id = symbol.id
+                        self._instrument_key_cache[instrument_key] = symbol_id
+                
+                if symbol_id:
+                    # Create tick record
+                    tick = Tick(
+                        symbol_id=symbol_id,
+                        price=tick_data.last_price,
+                        open_price=tick_data.open_price,
+                        high_price=tick_data.high_price,
+                        low_price=tick_data.low_price,
+                        close_price=tick_data.close_price,
+                        volume=tick_data.volume,
+                        oi=tick_data.oi,
+                        iv=tick_data.iv,
+                        delta=tick_data.delta,
+                        gamma=tick_data.gamma,
+                        theta=tick_data.theta,
+                        vega=tick_data.vega,
+                        bid=tick_data.bid,
+                        ask=tick_data.ask,
+                        bid_volume=tick_data.bid_volume,
+                        ask_volume=tick_data.ask_volume,
+                        timestamp=tick_data.timestamp
+                    )
 
-            # Create tick record
-            tick = Tick(
-                symbol_id=symbol_id,
-                price=tick_data.last_price,
-                open_price=tick_data.open_price,
-                high_price=tick_data.high_price,
-                low_price=tick_data.low_price,
-                close_price=tick_data.close_price,
-                volume=tick_data.volume,
-                oi=tick_data.oi,
-                iv=tick_data.iv,
-                delta=tick_data.delta,
-                gamma=tick_data.gamma,
-                theta=tick_data.theta,
-                vega=tick_data.vega,
-                bid=tick_data.bid,
-                ask=tick_data.ask,
-                bid_volume=tick_data.bid_volume,
-                ask_volume=tick_data.ask_volume,
-                timestamp=tick_data.timestamp
-            )
+                    # Add to session
+                    self.db.add(tick)
+                    self.db.commit()
 
-            # Add to session
-            self.db.add(tick)
-            self.db.commit()
-
-            self.tick_count += 1
             
             # Log live price to file (respects sample rate and enable flag)
             option_name = self._instrument_key_to_name.get(instrument_key, instrument_key)
@@ -444,6 +448,20 @@ async def process_tick(tick_data: TickData) -> bool:
         candle_manager.update_candle(tick_data)
     except Exception as e:
         logger.error(f"Error updating candle manager: {e}")
+    
+    # NEW: Check paper trade exits (real-time tick-by-tick)
+    # This ensures scalping SL/TP are hit instantly, not just on candle close
+    try:
+        from ..trading.paper_trading_manager import paper_trading_manager
+        exit_msg = paper_trading_manager.check_exits(tick_data.symbol, tick_data.last_price)
+        if exit_msg:
+            from ..notifications.telegram import get_telegram_service
+            from ..config.settings import settings
+            telegram = get_telegram_service(settings)
+            if telegram:
+                asyncio.create_task(telegram.send_message(f"🏁 <b>SCALPING TRADE CLOSED</b>\n<pre>{exit_msg}</pre>"))
+    except Exception as e:
+        logger.error(f"Error checking real-time exits: {e}")
     
     return all(results)
 

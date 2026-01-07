@@ -30,6 +30,52 @@ class CandleManager:
     def register_callback(self, callback):
         self.on_candle_close_callbacks.append(callback)
 
+    def load_candles_from_db(self, symbol_name: str, timeframe: str = '1m'):
+        """
+        Pre-load candles from database on startup to avoid cold-start issues.
+        """
+        db = SessionLocal()
+        try:
+            # Find symbol
+            sym_record = db.query(Symbol).filter(Symbol.symbol == symbol_name).first()
+            if not sym_record:
+                # Try instrument_key if symbol_name is an instrument_key
+                from ..data.models import SubscribedOption
+                opt = db.query(SubscribedOption).filter(SubscribedOption.instrument_key == symbol_name).first()
+                if opt:
+                    sym_record = db.query(Symbol).filter(Symbol.symbol == opt.symbol).first()
+
+            if not sym_record:
+                return
+
+            # Get last max_candles
+            db_candles = db.query(Candle).filter(
+                Candle.symbol_id == sym_record.id,
+                Candle.timeframe == timeframe
+            ).order_by(Candle.timestamp.desc()).limit(self.max_candles).all()
+
+            if not db_candles:
+                return
+
+            # Add to deque (order must be ascending)
+            for candle in reversed(db_candles):
+                candle_dict = {
+                    'timestamp': candle.timestamp,
+                    'open': float(candle.open),
+                    'high': float(candle.high),
+                    'low': float(candle.low),
+                    'close': float(candle.close),
+                    'volume': int(candle.volume)
+                }
+                self.candles[symbol_name][timeframe].append(candle_dict)
+            
+            logger.info(f"📚 Pre-loaded {len(db_candles)} {timeframe} candles for {symbol_name}")
+            
+        except Exception as e:
+            logger.error(f"Error loading candles for {symbol_name}: {e}")
+        finally:
+            db.close()
+
     def update_candle(self, tick: TickData):
         """
         Update candles with a new tick.

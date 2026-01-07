@@ -133,32 +133,63 @@ def generate_end_of_day_report(output_dir: Optional[str] = None) -> Dict[str, An
             Tick.timestamp >= today_start
         ).first()
         
-        # 5. Trading Performance
+        # 5. Trading Performance (Include LIVE, PAPER, and SCALPING)
+        # Include trades created today OR exited today
         today_trades = db.query(Trade).filter(
-            Trade.created_at >= today_start
+            (Trade.created_at >= today_start) | (Trade.exit_time >= today_start)
         ).all()
         
+        # 6. Account Summary
+        # Calculate opening balance: Settings + historical PnL before today
+        historical_pnl_query = db.query(Trade).filter(
+            Trade.status.in_([TradeStatus.CLOSED, TradeStatus.STOPPED_OUT, TradeStatus.TAKE_PROFIT, TradeStatus.TRAILING_SL]),
+            Trade.exit_time < today_start
+        ).all()
+        historical_pnl = sum(t.pnl or 0 for t in historical_pnl_query)
+        opening_balance = settings.account_size + historical_pnl
+        
         total_trades = len(today_trades)
-        closed_trades = [t for t in today_trades if t.status != TradeStatus.OPEN]
+        # Include all completed trade statuses
+        COMPLETED_STATUSES = [
+            TradeStatus.CLOSED, 
+            TradeStatus.STOPPED_OUT, 
+            TradeStatus.TAKE_PROFIT, 
+            TradeStatus.TRAILING_SL
+        ]
+        closed_trades = [t for t in today_trades if t.status in COMPLETED_STATUSES]
         winning_trades = [t for t in closed_trades if (t.pnl or 0) > 0]
         
         total_pnl = sum(t.pnl or 0 for t in closed_trades)
         win_rate = (len(winning_trades) / len(closed_trades) * 100) if closed_trades else 0
+        
+        # Calculate current equity
+        current_equity = opening_balance + total_pnl
+        
+        # Breakdown by type
+        live_trades = [t for t in today_trades if t.trade_type == "LIVE"]
+        paper_trades = [t for t in today_trades if t.trade_type == "PAPER"]
+        scalping_trades = [t for t in today_trades if t.trade_type == "SCALPING"]
         
         # Save report to file
         report = {
             "date": str(today),
             "generated_at": ist_now().isoformat(),
             "total_ticks": total_ticks,
+            "opening_balance": opening_balance,
+            "current_equity": current_equity,
             "unique_options": len(stats_query),
             "trading": {
                 "total_trades": total_trades,
+                "live_trades": len(live_trades),
+                "paper_trades": len(paper_trades),
+                "scalping_trades": len(scalping_trades),
                 "closed_trades": len(closed_trades),
                 "win_rate": win_rate,
                 "total_pnl": total_pnl,
                 "trades": [
                     {
                         "id": str(t.id),
+                        "type": t.trade_type,
                         "side": t.order_side,
                         "entry": t.entry_price,
                         "exit": t.exit_price,

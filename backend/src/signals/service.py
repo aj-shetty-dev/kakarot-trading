@@ -44,6 +44,8 @@ class SignalService:
         self.telegram = get_telegram_service(settings)
         self._instrument_to_symbol_id: Dict[str, Any] = {}
         self._cache_loaded = False
+        self._last_signal_time: Dict[str, datetime] = {}
+        self.cooldown_seconds = 60
 
     def _load_cache(self):
         """Load instrument_key to symbol_id mapping"""
@@ -91,6 +93,19 @@ class SignalService:
         db = SessionLocal()
         try:
             for sig_data in detected_signals:
+                # Apply cooldown to prevent signal storms
+                sig_type = sig_data['type']
+                cooldown_key = f"{symbol_info['name']}_{sig_type}"
+                now = ist_now()
+                
+                if cooldown_key in self._last_signal_time:
+                    elapsed = (now - self._last_signal_time[cooldown_key]).total_seconds()
+                    if elapsed < self.cooldown_seconds:
+                        continue
+                
+                # Update last signal time
+                self._last_signal_time[cooldown_key] = now
+
                 # Log the detection
                 msg = (f"🎯 SIGNAL DETECTED: {symbol_info['name']} | "
                        f"Type: {sig_data['type']} | "
@@ -108,7 +123,11 @@ class SignalService:
                     price_at_signal=tick_data.last_price,
                     volume_at_signal=tick_data.volume,
                     detected_at=ist_now(),
-                    signal_metadata=sig_data['metadata']
+                    signal_metadata={
+                        **sig_data['metadata'],
+                        "instrument_key": tick_data.symbol,
+                        "option_name": symbol_info['name']
+                    }
                 )
                 
                 db.add(signal)
@@ -118,17 +137,7 @@ class SignalService:
                 signals_to_return.append(signal)
                 
                 # Trigger trading service
-                asyncio.create_task(trading_service.handle_signal(signal))
-                
-                # Notify via Telegram for high strength signals
-                if signal.strength > 0.8:
-                    await self.telegram.send_message(
-                        f"🎯 <b>High Strength Signal</b>\n"
-                        f"Symbol: <code>{symbol_info['name']}</code>\n"
-                        f"Type: <code>{signal.signal_type}</code>\n"
-                        f"Price: <code>{signal.price_at_signal}</code>\n"
-                        f"Strength: <code>{signal.strength:.2f}</code>"
-                    )
+                asyncio.create_task(trading_service.handle_signal(signal.id))
 
             return signals_to_return
             

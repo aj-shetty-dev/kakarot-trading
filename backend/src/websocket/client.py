@@ -19,9 +19,19 @@ from datetime import datetime
 import logging
 import traceback
 import time
+import random
+import socket
 
 from ..config.settings import settings
-from ..config.constants import UPSTOX_WEBSOCKET_URL, WEBSOCKET_RECONNECT_DELAY, WEBSOCKET_MAX_RECONNECT_ATTEMPTS
+from ..config.constants import (
+    UPSTOX_WEBSOCKET_URL,
+    WEBSOCKET_RECONNECT_DELAY,
+    WEBSOCKET_MAX_RECONNECT_ATTEMPTS,
+    WEBSOCKET_RECONNECT_JITTER,
+    CONNECTION_RETRY_TIMEOUT,
+    DNS_FALLBACK_SERVERS,
+    DNS_TIMEOUT
+)
 from ..config.logging import websocket_logger as logger
 from ..config.timezone import ist_now
 from ..notifications.telegram import get_telegram_service
@@ -69,13 +79,76 @@ class UpstoxWebSocketClient:
         
         # Telegram Service
         self.telegram = get_telegram_service(settings)
-        self.last_reconnect_time = 0
-        self.base_reconnect_delay = WEBSOCKET_RECONNECT_DELAY
-        self.network_error_count = 0
-        self.max_network_errors = 10
         
-        # V3 Message Parser
-        self.message_parser = get_message_parser()
+        # Price cache for fallback position monitoring
+        self.price_cache: Dict[str, Dict[str, Any]] = {}  # {symbol: {price, timestamp}}
+        self.last_cache_update_time = 0
+        
+        # DNS resolution tracking
+        self.dns_failure_count = 0
+        self.last_dns_failure_time = 0
+
+    async def _resolve_with_fallback(self, hostname: str) -> Optional[str]:
+        """
+        Attempt DNS resolution with fallback DNS servers.
+        
+        Args:
+            hostname: Hostname to resolve (e.g., 'api.upstox.com')
+            
+        Returns:
+            str: Resolved IP address or None if all attempts fail
+        """
+        try:
+            # Try default DNS first (system DNS)
+            logger.info(f"[DNS] Attempting to resolve {hostname} with system DNS...")
+            try:
+                ip = socket.gethostbyname(hostname)
+                logger.info(f"[DNS] ✅ Resolved {hostname} → {ip} (system DNS)")
+                return ip
+            except socket.gaierror as e:
+                logger.warning(f"[DNS] ⚠️ System DNS failed: {e}")
+                self.dns_failure_count += 1
+                self.last_dns_failure_time = time.time()
+            
+            # Try fallback DNS servers
+            logger.info("[DNS] Attempting fallback DNS servers...")
+            try:
+                import dns.resolver
+                for dns_server in DNS_FALLBACK_SERVERS:
+                    try:
+                        logger.info(f"[DNS] Trying {dns_server}...")
+                        resolver = dns.resolver.Resolver()
+                        resolver.nameservers = [dns_server]
+                        resolver.timeout = DNS_TIMEOUT
+                        result = resolver.resolve(hostname, 'A')
+                        ip = str(result[0])
+                        logger.info(f"[DNS] ✅ Resolved {hostname} → {ip} (via {dns_server})")
+                        self.dns_failure_count = 0  # Reset DNS failure count
+                        return ip
+                    except Exception as inner_e:
+                        logger.warning(f"[DNS] {dns_server} failed: {type(inner_e).__name__}")
+                        continue
+            except ImportError:
+                logger.warning("[DNS] dnspython not available, skipping fallback DNS")
+                pass
+            
+            logger.error("[DNS] ❌ All DNS resolution attempts failed!")
+            return None
+            
+        except Exception as e:
+            logger.error(f"[DNS] Unexpected error in DNS resolution: {e}")
+            return None
+    
+    async def _check_dns_health(self) -> bool:
+        """
+        Check if DNS is working by attempting to resolve api.upstox.com
+        
+        Returns:
+            bool: True if DNS is healthy, False otherwise
+        """
+        hostname = "api.upstox.com"
+        result = await self._resolve_with_fallback(hostname)
+        return result is not None
 
     async def connect(self) -> bool:
         """
@@ -419,6 +492,9 @@ class UpstoxWebSocketClient:
                     tick = self._parse_v3_tick(tick_data)
                     
                     if tick:
+                        # Cache the price for fallback position monitoring
+                        self._cache_price(tick.symbol, tick.last_price, tick.timestamp)
+                        
                         for handler in self.message_handlers:
                             try:
                                 await handler(tick)
@@ -532,9 +608,63 @@ class UpstoxWebSocketClient:
         """
         self.message_handlers.append(handler)
         logger.info(f"Registered message handler: {handler.__name__}")
+    
+    def _cache_price(self, symbol: str, price: float, timestamp: datetime) -> None:
+        """
+        Cache price for fallback position monitoring when WebSocket is down.
+        
+        Args:
+            symbol: Symbol/instrument key
+            price: Current price
+            timestamp: Time of price update
+        """
+        self.price_cache[symbol] = {
+            "price": price,
+            "timestamp": timestamp,
+            "time_unix": time.time()
+        }
+        self.last_cache_update_time = time.time()
+    
+    def get_cached_price(self, symbol: str) -> Optional[float]:
+        """
+        Get cached price for a symbol if available and not stale.
+        
+        Args:
+            symbol: Symbol/instrument key
+            
+        Returns:
+            float: Price if available and fresh, None otherwise
+        """
+        if symbol not in self.price_cache:
+            return None
+        
+        cache_entry = self.price_cache[symbol]
+        age = time.time() - cache_entry["time_unix"]
+        
+        # Check if cache is still fresh (within timeout)
+        if age > PRICE_CACHE_TIMEOUT:
+            logger.debug(f"[CACHE] Price for {symbol} is stale ({age:.0f}s old)")
+            return None
+        
+        return cache_entry["price"]
+    
+    def get_price_freshness(self, symbol: str) -> Optional[float]:
+        """
+        Get how fresh the cached price is in seconds.
+        
+        Args:
+            symbol: Symbol/instrument key
+            
+        Returns:
+            float: Age of price in seconds, None if not cached
+        """
+        if symbol not in self.price_cache:
+            return None
+        
+        return time.time() - self.price_cache[symbol]["time_unix"]
 
     async def _attempt_reconnect(self) -> None:
-        """Attempt to reconnect to WebSocket with exponential backoff."""
+        """Attempt to reconnect to WebSocket with exponential backoff and jitter."""
         if self.reconnect_attempts >= self.max_reconnect_attempts:
             logger.error(f"[CRITICAL] Max reconnection attempts ({self.max_reconnect_attempts}) reached")
             if self.network_error_count > self.max_network_errors:
@@ -543,14 +673,28 @@ class UpstoxWebSocketClient:
 
         self.reconnect_attempts += 1
         
+        # Check DNS health first (non-blocking check)
+        if self.reconnect_attempts % 3 == 0:  # Check DNS every 3 attempts
+            logger.info("[DNS] Checking DNS health...")
+            dns_ok = await self._check_dns_health()
+            if not dns_ok:
+                logger.warning("[DNS] ⚠️ DNS is still failing, reconnection unlikely to succeed")
+                await self.telegram.send_message(
+                    "⚠️ <b>DNS Resolution Issue Detected</b>\n"
+                    "Network appears to have DNS failures. System will continue retrying. "
+                    "If this persists, please check your internet connection."
+                )
+        
         # Exponential backoff with cap: base_delay * (2 ^ attempt_number)
         exponential_delay = self.base_reconnect_delay * (2 ** min(self.reconnect_attempts - 1, 5))
+        # Add jitter to avoid thundering herd
+        jitter = random.uniform(0, WEBSOCKET_RECONNECT_JITTER * exponential_delay)
         # Cap max delay at 5 minutes
         max_delay = 300
-        wait_time = min(exponential_delay, max_delay)
+        wait_time = min(exponential_delay + jitter, max_delay)
         
         logger.info(f"[VERBOSE] Reconnecting (attempt {self.reconnect_attempts}/{self.max_reconnect_attempts})...")
-        logger.info(f"[VERBOSE] Waiting {wait_time:.1f} seconds before retry...")
+        logger.info(f"[VERBOSE] Waiting {wait_time:.1f} seconds before retry (with jitter)...")
         logger.info(f"[VERBOSE] Network errors so far: {self.network_error_count}/{self.max_network_errors}")
         
         try:

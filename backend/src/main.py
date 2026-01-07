@@ -71,6 +71,10 @@ async def lifespan(app: FastAPI):
         await initialize_options_service_v3()
         logger.info("✅ Options service initialized")
 
+        # Start position monitoring task (Always run to handle open positions)
+        asyncio.create_task(trading_service.monitor_positions())
+        logger.info("📈 Position monitoring started")
+
         # Start Market Session Manager (handles 9-3 schedule)
         if settings.auto_start_stop:
             logger.info("🕒 Starting Market Session Manager...")
@@ -84,9 +88,6 @@ async def lifespan(app: FastAPI):
             ws_service = await initialize_websocket_service()
             if ws_service:
                 logger.info("✅ WebSocket service initialized")
-                # Start position monitoring task
-                asyncio.create_task(trading_service.monitor_positions())
-                logger.info("📈 Position monitoring started")
             else:
                 logger.warning("⚠️ WebSocket service failed to initialize")
                 await telegram.send_message("⚠️ <b>Warning:</b> WebSocket service failed to initialize during startup.")

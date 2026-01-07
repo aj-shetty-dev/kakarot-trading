@@ -79,13 +79,30 @@ class MarketSessionManager:
             # Send the summary if we have a report
             if report and "trading" in report:
                 perf = report["trading"]
+                
+                # Get Paper Trading Summary (now loads from DB if needed)
+                from .paper_trading_manager import paper_trading_manager
+                paper_summary = paper_trading_manager.get_summary()
+                
                 telegram = get_telegram_service(settings)
-                await telegram.send_message(
+                
+                # Format summary with breakdown
+                msg = (
                     f"📊 <b>Daily Performance Summary</b>\n"
                     f"Total Trades: <code>{perf['total_trades']}</code>\n"
+                    f"L: <code>{perf.get('live_trades', 0)}</code> | "
+                    f"P: <code>{perf.get('paper_trades', 0)}</code> | "
+                    f"S: <code>{perf.get('scalping_trades', 0)}</code>\n"
                     f"Win Rate: <code>{perf['win_rate']:.1f}%</code>\n"
-                    f"Total PnL: <b>₹{perf['total_pnl']:,.2f}</b>"
+                    f"Total PnL: <b>₹{perf['total_pnl']:,.2f}</b>\n\n"
+                    f"💰 <b>Wallet</b>\n"
+                    f"Start: <code>₹{report.get('opening_balance', 0):,.2f}</code>\n"
+                    f"End: <b>₹{report.get('current_equity', 0):,.2f}</b>\n\n"
+                    f"🧪 <b>Paper Trading (Scalping)</b>\n"
+                    f"<pre>{paper_summary}</pre>"
                 )
+                
+                await telegram.send_message(msg)
                 self.report_sent_today = True
             else:
                 self.report_sent_today = True
@@ -265,12 +282,28 @@ class MarketSessionManager:
                 # Send summary to Telegram
                 if report and "trading" in report:
                     perf = report["trading"]
-                    await telegram.send_message(
+                    
+                    # Get Paper Trading Summary
+                    from .paper_trading_manager import paper_trading_manager
+                    paper_summary = paper_trading_manager.get_summary()
+                    
+                    # Format summary with breakdown
+                    msg = (
                         f"📊 <b>Daily Performance Summary</b>\n"
                         f"Total Trades: <code>{perf['total_trades']}</code>\n"
+                        f"L: <code>{perf.get('live_trades', 0)}</code> | "
+                        f"P: <code>{perf.get('paper_trades', 0)}</code> | "
+                        f"S: <code>{perf.get('scalping_trades', 0)}</code>\n"
                         f"Win Rate: <code>{perf['win_rate']:.1f}%</code>\n"
-                        f"Total PnL: <b>₹{perf['total_pnl']:,.2f}</b>"
+                        f"Total PnL: <b>₹{perf['total_pnl']:,.2f}</b>\n\n"
+                        f"💰 <b>Wallet</b>\n"
+                        f"Start: <code>₹{report.get('opening_balance', 0):,.2f}</code>\n"
+                        f"End: <b>₹{report.get('current_equity', 0):,.2f}</b>\n\n"
+                        f"🧪 <b>Paper Trading (Scalping)</b>\n"
+                        f"<pre>{paper_summary}</pre>"
                     )
+                    
+                    await telegram.send_message(msg)
             except Exception as report_err:
                 logger.error(f"Error generating EOD report: {report_err}")
                 

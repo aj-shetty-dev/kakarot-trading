@@ -55,6 +55,7 @@ class SignalType(str, Enum):
     REVERSAL = "REVERSAL"
     MOMENTUM = "MOMENTUM"
     VOLUME_SPIKE = "VOLUME_SPIKE"
+    VOLUME_SURGE = "VOLUME_SURGE"
     BREAKOUT = "BREAKOUT"
 
 
@@ -74,6 +75,7 @@ class TradeStatus(str, Enum):
     STOPPED_OUT = "STOPPED_OUT"
     TAKE_PROFIT = "TAKE_PROFIT"
     TRAILING_SL = "TRAILING_SL"
+    SQUARED_OFF = "SQUARED_OFF"
 
 
 # ========== POSITION STATUS ==========
@@ -115,6 +117,21 @@ DOJI_THRESHOLD = 0.1  # Within 10% considered as doji
 MAX_WEBSOCKET_SUBSCRIPTIONS = 200
 WEBSOCKET_RECONNECT_DELAY = 5  # seconds
 WEBSOCKET_MAX_RECONNECT_ATTEMPTS = 10
+WEBSOCKET_RECONNECT_JITTER = 0.5  # Add random jitter to avoid thundering herd
+
+# ========== DNS FALLBACK ==========
+DNS_FALLBACK_SERVERS = [
+    "8.8.8.8",      # Google DNS
+    "1.1.1.1",      # Cloudflare DNS
+    "8.8.4.4",      # Google DNS Secondary
+    "1.0.0.1",      # Cloudflare DNS Secondary
+]
+DNS_TIMEOUT = 5  # seconds
+
+# ========== CONNECTION RESILIENCE ==========
+PRICE_CACHE_TIMEOUT = 300  # Keep cached prices for 5 minutes
+MAX_POSITION_MONITORING_RETRIES = 3  # Retry position checks if price is stale
+STALE_PRICE_WARNING_THRESHOLD = 30  # Warn if prices older than 30 seconds
 
 # ========== DATABASE ==========
 DB_ECHO = False  # Set to True to see SQL queries
@@ -124,6 +141,7 @@ DB_MAX_OVERFLOW = 10
 # ========== TIMEOUTS ==========
 API_TIMEOUT = 30  # seconds
 WEBSOCKET_TIMEOUT = 60  # seconds
+CONNECTION_RETRY_TIMEOUT = 10  # seconds to wait before checking connection health
 
 # ========== LOGGING FORMAT ==========
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
