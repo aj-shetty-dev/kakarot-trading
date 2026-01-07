@@ -177,7 +177,7 @@ class Trade(Base):
     __tablename__ = "trades"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    signal_id = Column(UUID(as_uuid=True), ForeignKey("signals.id"), unique=True, nullable=False)
+    signal_id = Column(UUID(as_uuid=True), ForeignKey("signals.id"), unique=True, nullable=True)
     signal = relationship("Signal", back_populates="trade")
 
     symbol_id = Column(UUID(as_uuid=True), ForeignKey("symbols.id"), nullable=False, index=True)

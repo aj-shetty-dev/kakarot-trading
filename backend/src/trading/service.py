@@ -6,6 +6,7 @@ import logging
 import asyncio
 import uuid
 import pandas as pd
+from datetime import timedelta
 from typing import Optional, List, Dict, Any
 from sqlalchemy.orm import Session
 
@@ -145,6 +146,11 @@ class TradingService:
         """
         if not settings.scalping_enabled:
             return
+            
+        # Block new entries during square-off period
+        if self.is_square_off_period():
+            logger.warning(f"🕒 Ignoring scalping signal for {symbol}: Square-off period active.")
+            return
 
         # Risk Validation
         if symbol_id and not risk_manager.validate_trade(symbol_id, price):
@@ -200,10 +206,26 @@ class TradingService:
         if log_msg and self.telegram:
             await self.telegram.send_message(f"🧪 <b>PAPER TRADE OPENED</b>\n<pre>{log_msg}</pre>")
 
+    def is_square_off_period(self) -> bool:
+        """
+        Check if we are currently in the square-off period (15:15 - 15:30 IST)
+        """
+        now = ist_now()
+        close_h, close_m = map(int, settings.market_close_time.split(":"))
+        market_close = now.replace(hour=close_h, minute=close_m, second=0, microsecond=0)
+        square_off_time = market_close - timedelta(minutes=15)
+        
+        return now >= square_off_time
+
     async def handle_signal(self, signal_id: uuid.UUID):
         """
         Process a new signal and execute trade if valid
         """
+        # Block new entries during square-off period
+        if self.is_square_off_period():
+            logger.warning("🕒 Ignoring new signal: Square-off period active.")
+            return
+
         db = SessionLocal()
         try:
             # Re-fetch signal to avoid DetachedInstanceError in async task
@@ -265,15 +287,30 @@ class TradingService:
                 
                 # Update signal status
                 signal.status = SignalStatus.EXECUTED
-                db.add(signal) # Use add/commit for re-attached signal
+                db.add(signal)
                 
                 db.commit()
                 
-                logger.info(f"💰 LIVE TRADE OPENED: {symbol.symbol} | Qty: {quantity} | Entry: {trade.entry_price} | SL: {sl_price:.2f} | TP: {tp_price:.2f}")
+                trade_mode_str = "PAPER" if settings.paper_trading_mode else "LIVE"
+                logger.info(f"💰 {trade_mode_str} TRADE OPENED: {symbol.symbol} | Qty: {quantity} | Entry: {trade.entry_price} | SL: {sl_price:.2f} | TP: {tp_price:.2f}")
+
+                # Register with paper trading manager if it's a paper trade
+                if settings.paper_trading_mode:
+                    paper_trading_manager.active_positions[symbol.symbol] = {
+                        'id': str(trade.id),
+                        'symbol': symbol.symbol,
+                        'side': side.value if isinstance(side, OrderSide) else side,
+                        'entry_price': trade.entry_price,
+                        'quantity': quantity,
+                        'sl': sl_price,
+                        'tp': tp_price,
+                        'entry_time': trade.entry_time,
+                        'status': 'OPEN'
+                    }
 
                 if self.telegram:
                     await self.telegram.send_message(
-                        f"🚀 <b>LIVE TRADE OPENED</b>\n"
+                        f"🚀 <b>{trade_mode_str} TRADE OPENED</b>\n"
                         f"Symbol: {symbol.symbol}\n"
                         f"Price: {signal.price_at_signal}\n"
                         f"Qty: {quantity}\n"
@@ -302,7 +339,7 @@ class TradingService:
             try:
                 open_trades = db.query(Trade).filter(
                     Trade.status == TradeStatus.OPEN,
-                    Trade.trade_type.in_(["LIVE", "PAPER"])
+                    Trade.trade_type.in_(["LIVE", "PAPER", "SCALPING"])
                 ).all()
                 
                 ws_client = get_websocket_client()
@@ -374,6 +411,12 @@ class TradingService:
                             if current_trailing is not None and new_trailing_sl > current_trailing:
                                 trade.trailing_stop_price = new_trailing_sl
                                 db.commit()
+                                
+                                # Sync with paper trading manager for real-time tick checks
+                                if trade.trade_type in ["PAPER", "SCALPING"]:
+                                    symbol_name = trade.symbol.symbol if hasattr(trade.symbol, 'symbol') else trade.symbol
+                                    if symbol_name in paper_trading_manager.active_positions:
+                                        paper_trading_manager.active_positions[symbol_name]['trailing_sl'] = new_trailing_sl
                             
             except Exception as e:
                 logger.error(f"Error in position monitoring: {e}")
@@ -477,24 +520,28 @@ class TradingService:
         except Exception as e:
             logger.error(f"Error during paper square-off: {e}")
         
-        # 2. Square off Live Trades
+        # 2. Square off Remaining Trades from DB (Final Sweep)
         db = SessionLocal()
         try:
+            # Query for ANY remaining open trades regardless of type
             open_trades = db.query(Trade).filter(
-                Trade.status == TradeStatus.OPEN,
-                Trade.trade_type == "LIVE"
+                Trade.status == TradeStatus.OPEN
             ).all()
+            
             if not open_trades:
-                logger.info("No open live trades to square off.")
-                return
-
-            for trade in open_trades:
-                try:
-                    await self.close_trade(trade, TradeStatus.CLOSED, db)
-                except Exception as trade_err:
-                    logger.error(f"Error closing trade {trade.id}: {trade_err}")
+                logger.info("No remaining open trades to square off.")
+            else:
+                logger.info(f"Found {len(open_trades)} remaining open trades for final square-off.")
+                for trade in open_trades:
+                    try:
+                        # Identify trade type for logging
+                        t_type = trade.trade_type or "UNKNOWN"
+                        logger.info(f"Closing {t_type} trade: {trade.id}")
+                        await self.close_trade(trade, TradeStatus.CLOSED, db)
+                    except Exception as trade_err:
+                        logger.error(f"Error closing trade {trade.id}: {trade_err}")
         except Exception as e:
-            logger.error(f"Error during live square-off: {e}")
+            logger.error(f"Error during final square-off sweep: {e}")
         finally:
             db.close()
 

@@ -53,6 +53,7 @@ class PaperTradingManager:
                     'quantity': trade.quantity,
                     'side': trade.order_side,
                     'sl': trade.stop_loss_price,
+                    'trailing_sl': trade.trailing_stop_price,
                     'tp': trade.take_profit_price,
                     'entry_time': trade.entry_time
                 }
@@ -131,6 +132,7 @@ class PaperTradingManager:
             'entry_price': price,
             'quantity': quantity,
             'sl': sl,
+            'trailing_sl': sl, # Initialize trailing sl with sl
             'tp': tp,
             'entry_time': ist_now(),
             'reason': reason,
@@ -161,18 +163,22 @@ class PaperTradingManager:
         pos = self.active_positions[symbol]
         side = pos['side']
         sl = pos['sl']
+        trailing_sl = pos.get('trailing_sl')
         tp = pos['tp']
+        
+        # Use trailing SL if available, else standard SL
+        effective_sl = trailing_sl if (trailing_sl is not None) else sl
         
         exit_reason = None
         
         if side == 'BUY':
-            if current_price <= sl:
-                exit_reason = 'STOP LOSS'
+            if current_price <= effective_sl:
+                exit_reason = 'TRAILING SL' if trailing_sl and trailing_sl > sl else 'STOP LOSS'
             elif current_price >= tp:
                 exit_reason = 'TAKE PROFIT'
         elif side == 'SELL':
-            if current_price >= sl:
-                exit_reason = 'STOP LOSS'
+            if current_price >= effective_sl:
+                exit_reason = 'TRAILING SL' if trailing_sl and trailing_sl < sl else 'STOP LOSS'
             elif current_price <= tp:
                 exit_reason = 'TAKE PROFIT'
                 
