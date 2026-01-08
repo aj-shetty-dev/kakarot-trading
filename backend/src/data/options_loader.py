@@ -330,32 +330,70 @@ class OptionsLoaderService:
             comma_separated_keys = ','.join(batch_keys)
             
             try:
-                async with httpx.AsyncClient(timeout=30.0) as client:
-                    response = await client.get(
-                        f"{self.api_base_url_v3}/market-quote/ltp",  # v3 for LTP
-                        params={"instrument_key": comma_separated_keys},
-                        headers=self.headers
-                    )
-                    
-                    if response.status_code == 200:
-                        data = response.json()
-                        if data.get("status") == "success" and "data" in data:
-                            payload = data["data"]
+                max_retries = 3
+                retry_delay = 2
+                
+                for attempt in range(max_retries):
+                    try:
+                        async with httpx.AsyncClient(timeout=30.0) as client:
+                            response = await client.get(
+                                f"{self.api_base_url_v3}/market-quote/ltp",  # v3 for LTP
+                                params={"instrument_key": comma_separated_keys},
+                                headers=self.headers
+                            )
                             
-                            # Map response back to symbols
-                            # Response keys are like "NSE_EQ:RELIANCE"
-                            for key, val in payload.items():
-                                if "last_price" in val:
-                                    if ":" in key:
-                                        resp_symbol = key.split(":")[1]
-                                        results[resp_symbol] = float(val["last_price"])
-                            
-                            logger.info(f"✅ Batch LTP fetch (v3): Got {len(payload)} prices (batch {batch_start//BATCH_SIZE + 1})")
-                    else:
-                        logger.warning(f"⚠️  Batch LTP API returned {response.status_code}")
+                            if response.status_code == 200:
+                                data = response.json()
+                                if data.get("status") == "success" and "data" in data:
+                                    payload = data["data"]
+                                    
+                                    # Map response back to symbols
+                                    # Create a reverse mapping for faster lookup and handle colon/pipe ambiguity
+                                    key_to_symbol = {}
+                                    for s, k in symbol_to_key.items():
+                                        # Store both pipe and colon versions just in case
+                                        key_to_symbol[k] = s
+                                        key_to_symbol[k.replace('|', ':')] = s
+                                    
+                                    matched_count = 0
+                                    for resp_key, val in payload.items():
+                                        if "last_price" in val:
+                                            # Upstox v3 returns keys like "NSE_EQ:RELIANCE" or "NSE_EQ:AMBER"
+                                            # even if we requested via ISIN "NSE_EQ|INE..."
+                                            parts = resp_key.replace('|', ':').split(':')
+                                            symbol_part = parts[-1]
+                                            
+                                            # Try matching by symbol name (most common for stocks)
+                                            if symbol_part in symbols:
+                                                results[symbol_part] = float(val["last_price"])
+                                                matched_count += 1
+                                            # Try matching by exact key or colon/pipe variation
+                                            elif resp_key in key_to_symbol:
+                                                results[key_to_symbol[resp_key]] = float(val["last_price"])
+                                                matched_count += 1
+                                    
+                                    logger.info(f"✅ Batch LTP fetch (v3): Got {len(payload)} prices, matched {matched_count} symbols")
+                                    break # Success!
+                            elif response.status_code == 429:
+                                logger.warning(f"⚠️  Rate limited by Upstox API (429) in batch LTP. Waiting {retry_delay*2}s...")
+                                await asyncio.sleep(retry_delay * 2)
+                                continue
+                            else:
+                                logger.warning(f"⚠️  Batch LTP API returned {response.status_code} (attempt {attempt + 1})")
+                                if attempt < max_retries - 1:
+                                    await asyncio.sleep(retry_delay)
+                                    continue
+                                
+                    except Exception as e:
+                        logger.warning(f"⚠️  Batch LTP attempt {attempt + 1} error: {e}")
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(retry_delay)
+                            retry_delay *= 2
+                            continue
                         
             except Exception as e:
-                logger.warning(f"⚠️  Batch LTP fetch error: {e}")
+                logger.error(f"❌ Critical error in batch LTP fetch: {e}")
+
         
         return results
     

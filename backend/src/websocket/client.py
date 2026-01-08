@@ -174,52 +174,73 @@ class UpstoxWebSocketClient:
                 "Authorization": f"Bearer {self.access_token}"
             }
             
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(
-                        "https://api.upstox.com/v3/feed/market-data-feed/authorize",
-                        headers=headers,
-                        timeout=aiohttp.ClientTimeout(total=30)
-                    ) as resp:
-                        logger.info(f"[VERBOSE] Authorization response status: {resp.status}")
-                        
-                        if resp.status == 200:
-                            auth_data = await resp.json()
-                            logger.info(f"[VERBOSE] Auth response: {str(auth_data)[:200]}")
+            ws_uri = None
+            max_retries = 3
+            retry_delay = 2
+            
+            for attempt in range(max_retries):
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(
+                            "https://api.upstox.com/v3/feed/market-data-feed/authorize",
+                            headers=headers,
+                            timeout=aiohttp.ClientTimeout(total=30)
+                        ) as resp:
+                            logger.info(f"[VERBOSE] Authorization response status: {resp.status} (Attempt {attempt + 1}/{max_retries})")
                             
-                            # Extract WebSocket URL from response
-                            ws_uri = auth_data.get("data", {}).get("authorizedRedirectUri")
-                            if not ws_uri:
-                                logger.error("[ERROR] No authorized redirect URI in response")
-                                self.network_error_count = 0
+                            if resp.status == 200:
+                                auth_data = await resp.json()
+                                logger.info(f"[VERBOSE] Auth response: {str(auth_data)[:200]}")
+                                
+                                # Extract WebSocket URL from response
+                                ws_uri = auth_data.get("data", {}).get("authorizedRedirectUri")
+                                if not ws_uri:
+                                    logger.error("[ERROR] No authorized redirect URI in response")
+                                    self.network_error_count = 0
+                                    return False
+                                
+                                logger.info(f"[SUCCESS] Got authorized WebSocket URI")
+                                logger.info(f"[VERBOSE] WebSocket URI: {ws_uri[:80]}...")
+                                break # Success!
+                            elif resp.status == 401:
+                                logger.error("❌ [CRITICAL] UPSTOX ACCESS TOKEN EXPIRED OR INVALID")
+                                logger.error("👉 Please generate a new token and update your .env file.")
+                                logger.error("👉 Run 'python3 update_token.py' in the dist folder.")
+                                
+                                # Send Telegram notification
+                                await self.telegram.send_message(
+                                    "🚨 <b>CRITICAL: Upstox Access Token Expired!</b>\n"
+                                    "The WebSocket connection failed because the token is invalid or expired. "
+                                    "Please update your <code>.env</code> file with a new token."
+                                )
+                                
+                                self.network_error_count = 0 # Don't retry indefinitely for auth errors
                                 return False
-                            
-                            logger.info(f"[SUCCESS] Got authorized WebSocket URI")
-                            logger.info(f"[VERBOSE] WebSocket URI: {ws_uri[:80]}...")
-                        elif resp.status == 401:
-                            logger.error("❌ [CRITICAL] UPSTOX ACCESS TOKEN EXPIRED OR INVALID")
-                            logger.error("👉 Please generate a new token and update your .env file.")
-                            logger.error("👉 Run 'python3 update_token.py' in the dist folder.")
-                            
-                            # Send Telegram notification
-                            await self.telegram.send_message(
-                                "🚨 <b>CRITICAL: Upstox Access Token Expired!</b>\n"
-                                "The WebSocket connection failed because the token is invalid or expired. "
-                                "Please update your <code>.env</code> file with a new token."
-                            )
-                            
-                            self.network_error_count = 0 # Don't retry indefinitely for auth errors
-                            return False
-                        else:
-                            error_text = await resp.text()
-                            logger.error(f"[ERROR] Authorization failed with status {resp.status}")
-                            logger.error(f"[VERBOSE] Response: {error_text[:200]}")
-                            self.network_error_count += 1
-                            return False
-            except (aiohttp.ClientConnectorError, aiohttp.ClientSSLError, asyncio.TimeoutError) as ne:
-                logger.error(f"[ERROR] Network error during authorization: {type(ne).__name__}")
-                logger.error(f"[VERBOSE] {str(ne)}")
-                self.network_error_count += 1
+                            elif resp.status == 429:
+                                logger.warning(f"⚠️ [WARNING] Rate limited by Upstox API (429). Waiting {retry_delay * 2}s...")
+                                await asyncio.sleep(retry_delay * 2)
+                                continue
+                            else:
+                                error_text = await resp.text()
+                                logger.error(f"[ERROR] Authorization failed with status {resp.status}")
+                                logger.error(f"[VERBOSE] Response: {error_text[:200]}")
+                                if attempt < max_retries - 1:
+                                    await asyncio.sleep(retry_delay)
+                                    continue
+                                self.network_error_count += 1
+                                return False
+                                
+                except (aiohttp.ClientConnectorError, aiohttp.ClientSSLError, asyncio.TimeoutError) as ne:
+                    logger.error(f"[ERROR] Network error during authorization (Attempt {attempt + 1}): {type(ne).__name__}")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(retry_delay)
+                        retry_delay *= 2 # Exponential backoff
+                        continue
+                    logger.error(f"[VERBOSE] {str(ne)}")
+                    self.network_error_count += 1
+                    return False
+            
+            if not ws_uri:
                 return False
             
             # Step 2: Connect to the authorized WebSocket URI

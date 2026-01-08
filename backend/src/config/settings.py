@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     # ========== ACCOUNT & RISK ==========
     account_size: float = 100_000  # ₹1,00,000
     risk_per_trade: float = 0.05  # 5%
-    daily_loss_limit: float = 0.02  # 2% per day
+    daily_loss_limit: float = 0.05  # 5% per day
     daily_profit_target: float = 0.05  # 5% per day
     max_concurrent_positions: int = 3
     max_trades_per_day: int = 15
