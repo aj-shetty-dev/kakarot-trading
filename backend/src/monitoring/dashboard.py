@@ -82,7 +82,7 @@ with tab1:
             is_expired = token_info.get("expired", False)
             
             if is_expired:
-                st.error(f"🚨 **CRITICAL: UPSTOX TOKEN EXPIRED!** Trading is disabled. Please update the token in the **Settings** tab.")
+                st.error(f"🚨 **CRITICAL: UPSTOX TOKEN EXPIRED!** Data collection is stopped. Please update the token in the **Settings** tab.")
             elif "h" in time_left and int(time_left.split('h')[0]) < 2:
                 st.warning(f"⚠️ **Token Expiring Soon:** {time_left} remaining (Expires at {expiry_time})")
 

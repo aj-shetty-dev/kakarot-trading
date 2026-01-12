@@ -159,8 +159,8 @@ async def root():
     """Root endpoint"""
     ws_service = get_websocket_service()
     return {
-        "message": "Upstox Trading Bot API",
-        "version": "0.1.0",
+        "message": "Kakarot Trading Bot API",
+        "version": "1.0.0",
         "docs": "/docs",
         "status": "running",
         "websocket_service": "active" if ws_service and ws_service.is_healthy() else "inactive"

@@ -19,7 +19,7 @@ async def send_test_notification():
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = {
         "chat_id": chat_id,
-        "text": "✅ <b>Test Notification Successful!</b>\n\nYour Upstox Trading Bot is now connected to Telegram. You will receive alerts for:\n• System Startup/Shutdown\n• Market Session changes\n• Token Expiry warnings\n• WebSocket status",
+        "text": "✅ <b>Test Notification Successful!</b>\n\nYour Kakarot Trading Bot is now connected to Telegram. You will receive alerts for:\n• System Startup/Shutdown\n• Market Session changes\n• Token Expiry warnings\n• WebSocket status",
         "parse_mode": "HTML"
     }
     
