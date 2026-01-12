@@ -9,9 +9,9 @@ services:
       POSTGRES_PASSWORD: kakarot_password
       POSTGRES_DB: kakarot_trading
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - kakarot_postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U kakarot_user -d kakarot_trading"]
       interval: 10s
@@ -24,9 +24,9 @@ services:
     image: redis:7-alpine
     container_name: kakarot_redis
     ports:
-      - "6379:6379"
+      - "6380:6379"
     volumes:
-      - redis_data:/data
+      - kakarot_redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -49,7 +49,7 @@ services:
       - 8.8.8.8
       - 1.1.1.1
     ports:
-      - "8000:8000"
+      - "8001:8000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -75,7 +75,7 @@ services:
       API_URL: http://app:8000/api/v1/monitoring
       TZ: Asia/Kolkata
     ports:
-      - "8501:8501"
+      - "8502:8501"
     depends_on:
       - app
     volumes:
@@ -86,8 +86,8 @@ services:
       - kakarot_network
 
 volumes:
-  postgres_data:
-  redis_data:
+  kakarot_postgres_data:
+  kakarot_redis_data:
 
 networks:
   kakarot_network:

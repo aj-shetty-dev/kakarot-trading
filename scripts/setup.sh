@@ -5,7 +5,7 @@
 
 set -e
 
-echo "🚀 Upstox Trading Bot - Setup Script"
+echo "🚀 Kakarot Trading Bot - Setup Script"
 echo "===================================="
 echo ""
 
@@ -45,13 +45,13 @@ echo ""
 echo "✅ Services started!"
 echo ""
 echo "📊 Service Status:"
-echo "  - PostgreSQL: localhost:5432"
-echo "  - Redis: localhost:6379"
-echo "  - API: http://localhost:8000"
+echo "  - PostgreSQL: localhost:5433"
+echo "  - Redis: localhost:6380"
+echo "  - API: http://localhost:8001"
 echo ""
 echo "📚 Documentation:"
-echo "  - API Docs: http://localhost:8000/docs"
-echo "  - ReDoc: http://localhost:8000/redoc"
+echo "  - API Docs: http://localhost:8001/docs"
+echo "  - ReDoc: http://localhost:8001/redoc"
 echo ""
 echo "🔧 Useful Commands:"
 echo "  - View logs: docker-compose logs -f app"
