@@ -1,3 +1,0 @@
-"""
-Risk management module
-"""

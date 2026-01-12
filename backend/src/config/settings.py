@@ -1,5 +1,5 @@
 """
-Configuration settings for Upstox Trading Bot
+Configuration settings for Kakarot Trading Bot
 Loads from environment variables or .env file
 """
 
@@ -82,7 +82,7 @@ class Settings(BaseSettings):
     volume_spike_multiplier: float = 2.0
 
     # ========== DATABASE ==========
-    database_url: str = "sqlite:///./upstox_trading.db"
+    database_url: str = "sqlite:///./kakarot_trading.db"
     db_pool_size: int = 5
     db_max_overflow: int = 10
 
@@ -95,9 +95,14 @@ class Settings(BaseSettings):
     debug: bool = True
 
     # ========== MARKET HOURS (IST) ==========
-    market_open_time: str = "09:00"
-    market_close_time: str = "16:00"
+    market_open_time: str = "09:15"
+    market_close_time: str = "15:30"
     auto_start_stop: bool = True
+    opening_range_wait_minutes: int = 15  # Wait 15 mins after open before trading
+
+    # ========== LIQUIDITY FILTERING ==========
+    min_avg_daily_volume: int = 1000  # Minimum average volume for the option contract
+    max_bid_ask_spread_pct: float = 0.03  # Max 3% spread allowed (if data available)
 
     # ========== NOTIFICATIONS ==========
     telegram_bot_token: Optional[str] = None

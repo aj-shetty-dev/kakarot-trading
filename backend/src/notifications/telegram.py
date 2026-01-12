@@ -1,8 +1,10 @@
 import httpx
 import logging
 import asyncio
+import json
+from pathlib import Path
 from typing import Optional
-from src.config.settings import Settings
+from ..config.settings import Settings
 
 logger = logging.getLogger(__name__)
 
@@ -11,7 +13,8 @@ class TelegramNotificationService:
         self.token = settings.telegram_bot_token
         self.chat_id = settings.telegram_chat_id
         self.enabled = settings.enable_notifications and self.token and self.chat_id
-        self.base_url = f"https://api.telegram.org/bot{self.token}/sendMessage" if self.token else None
+        self.api_url = f"https://api.telegram.org/bot{self.token}" if self.token else None
+        self.base_url = f"{self.api_url}/sendMessage" if self.api_url else None
 
     async def send_message(self, message: str, parse_mode: str = "HTML") -> bool:
         """Send a message to the configured Telegram chat"""

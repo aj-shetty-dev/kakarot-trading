@@ -7,7 +7,7 @@ import os
 
 # Page config
 st.set_page_config(
-    page_title="Upstox Bot Dashboard",
+    page_title="Kakarot Bot Dashboard",
     page_icon="📈",
     layout="wide"
 )
@@ -51,7 +51,7 @@ def get_login_url():
         return None
 
 # Sidebar
-st.sidebar.title("🚀 Upstox Bot")
+st.sidebar.title("🚀 Kakarot Bot")
 st.sidebar.markdown("---")
 
 # Current Time Display in Sidebar
@@ -64,7 +64,7 @@ st.sidebar.metric("Current Time (IST)", current_ist)
 refresh_rate = st.sidebar.slider("Refresh Rate (seconds)", 1, 30, 10)
 
 # Main UI
-st.title("📈 Trading System Dashboard")
+st.title("📈 Tick Collection Dashboard")
 
 # Tabs
 tab1, tab2, tab3 = st.tabs(["📊 Status", "🧠 AI Training Data", "⚙️ Settings"])

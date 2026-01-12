@@ -199,7 +199,7 @@ class TickDataHandler:
         self._cache_loaded = False
 
     def _load_instrument_key_cache(self):
-        """Load instrument_key to symbol_id mapping from SubscribedOption table"""
+        """Load instrument_key to symbol_id mapping (Options + Underlyings)"""
         if self._cache_loaded:
             return
             
@@ -207,24 +207,26 @@ class TickDataHandler:
             if not self.db:
                 self.db = SessionLocal()
             
-            # Load all subscribed options with their instrument_key
+            # 1. Load from SubscribedOption table (Options)
             options = self.db.query(SubscribedOption).all()
-            
             for opt in options:
                 if opt.instrument_key:
-                    # Try to find corresponding symbol
-                    symbol = self.db.query(Symbol).filter(
-                        Symbol.symbol == opt.symbol
-                    ).first()
-                    
+                    symbol = self.db.query(Symbol).filter(Symbol.symbol == opt.symbol).first()
                     if symbol:
                         self._instrument_key_cache[opt.instrument_key] = symbol.id
-                    
-                    # Also cache readable name for logging
                     self._instrument_key_to_name[opt.instrument_key] = opt.option_symbol or opt.symbol
             
+            # 2. Add Underlyings from ISIN_MAPPING
+            from ..data.isin_mapping_hardcoded import ISIN_MAPPING
+            for name, isin in ISIN_MAPPING.items():
+                inst_key = f"NSE_EQ|{isin}"
+                symbol = self.db.query(Symbol).filter(Symbol.symbol == name).first()
+                if symbol:
+                    self._instrument_key_cache[inst_key] = symbol.id
+                self._instrument_key_to_name[inst_key] = name
+            
             self._cache_loaded = True
-            logger.info(f"✅ Loaded {len(self._instrument_key_cache)} instrument_key -> symbol_id mappings")
+            logger.info(f"✅ Loaded {len(self._instrument_key_cache)} instrument_key mappings (Underlyings + Options)")
             
         except Exception as e:
             logger.error(f"Error loading instrument key cache: {e}")
@@ -415,13 +417,7 @@ async def initialize_handlers():
 
 async def process_tick(tick_data: TickData) -> bool:
     """
-    Process incoming tick data through all handlers
-    
-    Args:
-        tick_data: TickData from WebSocket
-    
-    Returns:
-        bool: True if all handlers successful
+    Process incoming tick data (Data Collection Only)
     """
     results = []
     
@@ -434,34 +430,6 @@ async def process_tick(tick_data: TickData) -> bool:
     if aggregated_handler:
         result = await aggregated_handler.handle_tick(tick_data)
         results.append(result)
-    
-    # Process through signal detector
-    try:
-        from ..signals.service import signal_service
-        await signal_service.process_tick(tick_data)
-    except Exception as e:
-        logger.error(f"Error in signal detection: {e}")
-
-    # Update Candle Manager
-    try:
-        from ..trading.candle_manager import candle_manager
-        candle_manager.update_candle(tick_data)
-    except Exception as e:
-        logger.error(f"Error updating candle manager: {e}")
-    
-    # NEW: Check paper trade exits (real-time tick-by-tick)
-    # This ensures scalping SL/TP are hit instantly, not just on candle close
-    try:
-        from ..trading.paper_trading_manager import paper_trading_manager
-        exit_msg = paper_trading_manager.check_exits(tick_data.symbol, tick_data.last_price)
-        if exit_msg:
-            from ..notifications.telegram import get_telegram_service
-            from ..config.settings import settings
-            telegram = get_telegram_service(settings)
-            if telegram:
-                asyncio.create_task(telegram.send_message(f"🏁 <b>SCALPING TRADE CLOSED</b>\n<pre>{exit_msg}</pre>"))
-    except Exception as e:
-        logger.error(f"Error checking real-time exits: {e}")
     
     return all(results)
 

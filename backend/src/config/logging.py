@@ -12,6 +12,15 @@ from .constants import LOG_FORMAT, LOG_DATE_FORMAT
 def setup_logging():
     """Setup logging for the application"""
 
+    # Root logger
+    root_logger = logging.getLogger()
+    
+    # PREVENT DOUBLE LOGGING: If root logger already has handlers, don't add more
+    if root_logger.hasHandlers():
+        return
+
+    root_logger.setLevel(getattr(logging, settings.log_level))
+
     # Create logs directory if it doesn't exist
     base_log_dir = Path(settings.log_dir)
     base_log_dir.mkdir(exist_ok=True)
@@ -50,28 +59,30 @@ def setup_logging():
     root_logger.addHandler(system_handler)
 
     # File handler - Signals log
-    signals_log_file = daily_log_dir / "signals" / "detections.log"
-    signals_handler = logging.handlers.RotatingFileHandler(
-        signals_log_file,
-        maxBytes=10_000_000,  # 10MB
-        backupCount=10
-    )
-    signals_handler.setLevel(logging.DEBUG)
-    signals_handler.setFormatter(logging.Formatter(LOG_FORMAT, datefmt=LOG_DATE_FORMAT))
     signals_logger = logging.getLogger("signals")
-    signals_logger.addHandler(signals_handler)
+    if not signals_logger.handlers:
+        signals_log_file = daily_log_dir / "signals" / "detections.log"
+        signals_handler = logging.handlers.RotatingFileHandler(
+            signals_log_file,
+            maxBytes=10_000_000,  # 10MB
+            backupCount=10
+        )
+        signals_handler.setLevel(logging.DEBUG)
+        signals_handler.setFormatter(logging.Formatter(LOG_FORMAT, datefmt=LOG_DATE_FORMAT))
+        signals_logger.addHandler(signals_handler)
 
     # File handler - Trading log (Orders and P&L)
-    trading_log_file = daily_log_dir / "trading" / "orders.log"
-    trading_handler = logging.handlers.RotatingFileHandler(
-        trading_log_file,
-        maxBytes=10_000_000,  # 10MB
-        backupCount=10
-    )
-    trading_handler.setLevel(logging.INFO)
-    trading_handler.setFormatter(logging.Formatter(LOG_FORMAT, datefmt=LOG_DATE_FORMAT))
     trading_logger = logging.getLogger("trading")
-    trading_logger.addHandler(trading_handler)
+    if not trading_logger.handlers:
+        trading_log_file = daily_log_dir / "trading" / "orders.log"
+        trading_handler = logging.handlers.RotatingFileHandler(
+            trading_log_file,
+            maxBytes=10_000_000,  # 10MB
+            backupCount=10
+        )
+        trading_handler.setLevel(logging.INFO)
+        trading_handler.setFormatter(logging.Formatter(LOG_FORMAT, datefmt=LOG_DATE_FORMAT))
+        trading_logger.addHandler(trading_handler)
 
     # File handler - Errors log
     errors_log_file = daily_log_dir / "system" / "errors.log"
@@ -92,6 +103,10 @@ def setup_logging():
             
             class TelegramAlertHandler(logging.Handler):
                 def emit(self, record):
+                    # Prevent infinite loop: don't alert on errors from the telegram module itself
+                    if record.name == "src.notifications.telegram" or record.module == "telegram":
+                        return
+
                     # Alert on ERROR and CRITICAL
                     if record.levelno >= logging.ERROR:
                         emoji = "🚨" if record.levelno == logging.CRITICAL else "⚠️"

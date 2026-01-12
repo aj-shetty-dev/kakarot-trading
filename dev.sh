@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Upstox Trading Bot - Development Start Script
+# Kakarot Trading Bot - Development Start Script
 # Usage: ./dev.sh
 
 # Colors
@@ -9,16 +9,16 @@ RED='\033[0;31m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-echo -e "${GREEN}🚀 Starting Upstox Trading Bot...${NC}"
+echo -e "${GREEN}🚀 Starting Kakarot Trading Bot...${NC}"
 
 # 1. Check for .env file
 if [ ! -f "backend/.env" ]; then
     echo -e "${RED}❌ Error: backend/.env file not found!${NC}"
     echo "Please create backend/.env with your Upstox credentials."
     echo "Example:"
-    echo "UPSTOX_API_KEY=your_key"
-    echo "UPSTOX_API_SECRET=your_secret"
-    echo "UPSTOX_ACCESS_TOKEN=your_token"
+    echo "upstox_api_key=your_key"
+    echo "upstox_api_secret=your_secret"
+    echo "upstox_access_token=your_token"
     exit 1
 fi
 

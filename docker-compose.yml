@@ -3,26 +3,26 @@ version: '3.8'
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: upstox_postgres
+    container_name: kakarot_postgres
     environment:
-      POSTGRES_USER: upstox_user
-      POSTGRES_PASSWORD: upstox_password
-      POSTGRES_DB: upstox_trading
+      POSTGRES_USER: kakarot_user
+      POSTGRES_PASSWORD: kakarot_password
+      POSTGRES_DB: kakarot_trading
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U upstox_user -d upstox_trading"]
+      test: ["CMD-SHELL", "pg_isready -U kakarot_user -d kakarot_trading"]
       interval: 10s
       timeout: 5s
       retries: 5
     networks:
-      - upstox_network
+      - kakarot_network
 
   redis:
     image: redis:7-alpine
-    container_name: upstox_redis
+    container_name: kakarot_redis
     ports:
       - "6379:6379"
     volumes:
@@ -33,13 +33,13 @@ services:
       timeout: 5s
       retries: 5
     networks:
-      - upstox_network
+      - kakarot_network
 
   app:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: upstox_trading_bot
+    container_name: kakarot_trading_bot
     env_file:
       - ./backend/.env
     environment:
@@ -62,13 +62,13 @@ services:
     command: uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
     restart: on-failure:5
     networks:
-      - upstox_network
+      - kakarot_network
 
   dashboard:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: upstox_dashboard
+    container_name: kakarot_dashboard
     env_file:
       - ./backend/.env
     environment:
@@ -83,12 +83,12 @@ services:
       - ./backend/logs:/app/logs
     command: sh -c "pip install streamlit watchdog && streamlit run src/monitoring/dashboard.py --server.port 8501 --server.address 0.0.0.0"
     networks:
-      - upstox_network
+      - kakarot_network
 
 volumes:
   postgres_data:
   redis_data:
 
 networks:
-  upstox_network:
+  kakarot_network:
     driver: bridge

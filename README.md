@@ -1,6 +1,6 @@
-# Upstox Algorithmic Trading Bot
+# Kakarot Algorithmic Trading Bot
 
-Intelligent trading system for NSE FNO instruments with AI-powered signal detection and automated order execution.
+Intelligent trading system for NSE FNO instruments with tick collection and automated data management.
 
 ## 🚀 Quick Start
 
@@ -11,7 +11,7 @@ Intelligent trading system for NSE FNO instruments with AI-powered signal detect
 
 ### For Distribution (Pre-built)
 If you are using the version shared in the `dist/` folder:
-1.  **Configure Credentials**: Update the `.env` file in the `dist/upstox-trading-bot/` folder.
+1.  **Configure Credentials**: Update the `.env` file in the `dist/kakarot-trading-bot/` folder.
 2.  **Launch System**: Run `./start.sh` inside that folder.
 3.  **Access Dashboard**: Open [http://localhost:8501](http://localhost:8501).
 

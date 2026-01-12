@@ -11,10 +11,6 @@ from .config.settings import settings
 from .config.logging import logger, setup_logging
 from .data.database import init_db
 from .websocket.service import initialize_websocket_service, shutdown_websocket_service, get_websocket_service
-from .data.options_service_v3 import initialize_options_service_v3
-from .data.options_loader import load_options_at_startup
-from .trading.session_manager import session_manager
-from .trading.service import trading_service
 from .notifications.telegram import get_telegram_service
 
 # Setup logging
@@ -27,7 +23,7 @@ async def lifespan(app: FastAPI):
     Manage app lifecycle - startup and shutdown
     """
     # Startup
-    logger.info("🚀 Upstox Trading Bot starting...")
+    logger.info("🚀 Kakarot Trading Bot starting...")
     
     # Send Telegram notification
     telegram = get_telegram_service(settings)
@@ -52,12 +48,11 @@ async def lifespan(app: FastAPI):
     elif now >= market_close:
         market_status = f"🔕 Closed (Closed at {settings.market_close_time})"
     else:
-        market_status = "🔔 Open (Trading Active)"
+        market_status = "🔔 Open (Active)"
 
     await telegram.send_message(
-        f"🚀 <b>Upstox Trading Bot Starting</b>\n"
+        f"🚀 <b>Tick Collection Service Starting</b>\n"
         f"Environment: <code>{settings.environment}</code>\n"
-        f"Mode: <code>{'Paper Trading' if settings.paper_trading_mode else 'LIVE'}</code>\n"
         f"Market: <b>{market_status}</b>\n"
         f"Token: {token_status} ({time_left} left)"
     )
@@ -66,31 +61,13 @@ async def lifespan(app: FastAPI):
         init_db()
         logger.info("✅ Database initialized")
 
-        # Initialize options service for options chain data (Database-based V3)
-        logger.info("📊 Initializing options chain service...")
-        await initialize_options_service_v3()
-        logger.info("✅ Options service initialized")
-
-        # Start position monitoring task (Always run to handle open positions)
-        asyncio.create_task(trading_service.monitor_positions())
-        logger.info("📈 Position monitoring started")
-
-        # Start Market Session Manager (handles 9-3 schedule)
-        if settings.auto_start_stop:
-            logger.info("🕒 Starting Market Session Manager...")
-            await session_manager.start_monitoring()
+        # Start WebSocket Service (includes subscription management)
+        ws_service = await initialize_websocket_service()
+        if ws_service:
+            logger.info("✅ WebSocket service initialized for data collection")
         else:
-            # Manual mode: start everything now
-            logger.info("📋 Manual mode: Loading options and starting WebSocket...")
-            options_count = await load_options_at_startup()
-            logger.info(f"✅ Options loaded: {options_count} subscribed options ready")
-            
-            ws_service = await initialize_websocket_service()
-            if ws_service:
-                logger.info("✅ WebSocket service initialized")
-            else:
-                logger.warning("⚠️ WebSocket service failed to initialize")
-                await telegram.send_message("⚠️ <b>Warning:</b> WebSocket service failed to initialize during startup.")
+            logger.warning("⚠️ WebSocket service failed to initialize")
+            await telegram.send_message("⚠️ <b>Warning:</b> WebSocket service failed to initialize.")
 
     except Exception as e:
         logger.error(f"❌ Failed to initialize services: {e}")
@@ -100,12 +77,9 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
-    logger.info("🛑 Upstox Trading Bot shutting down...")
-    await telegram.send_message("🛑 <b>Upstox Trading Bot Shutting Down</b>")
+    logger.info("🛑 Kakarot Trading Bot shutting down...")
+    await telegram.send_message("🛑 <b>Kakarot Trading Bot Shutting Down</b>")
     try:
-        if settings.auto_start_stop:
-            await session_manager.stop_monitoring()
-            
         await shutdown_websocket_service()
         logger.info("✅ WebSocket service shutdown complete")
     except Exception as e:
@@ -114,9 +88,9 @@ async def lifespan(app: FastAPI):
 
 # Create FastAPI app
 app = FastAPI(
-    title="Upstox Trading Bot API",
-    description="Algorithmic trading system for Upstox with AI-powered signal detection",
-    version="0.1.0",
+    title="Kakarot Trading Bot API",
+    description="Tick collection and automated data management system",
+    version="1.0.0",
     lifespan=lifespan
 )
 
@@ -130,22 +104,6 @@ app.add_middleware(
 )
 
 # ========== ROUTE REGISTRATION ==========
-# Register options routes
-from .api.routes import options as options_routes
-app.include_router(options_routes.router)
-
-# Register bracket routes
-from .api.routes import brackets as brackets_routes
-app.include_router(brackets_routes.router)
-
-# Register bracket management routes
-from .api.routes import bracket_management
-app.include_router(bracket_management.router)
-
-# Register verification routes
-from .api.routes import verification
-app.include_router(verification.router)
-
 # Register monitoring routes
 from .api.routes import monitoring
 app.include_router(monitoring.router)
@@ -244,38 +202,6 @@ async def get_latest_ticks():
         return {"error": "Handlers not initialized"}, 503
 
     return handler.get_stats()
-
-
-# ========== PLACEHOLDER ROUTES (TO BE IMPLEMENTED) ===========
-
-@app.get("/api/v1/symbols")
-async def get_symbols():
-    """Get list of tradeable symbols"""
-    return {"message": "Symbols endpoint - to be implemented"}
-
-
-@app.get("/api/v1/signals")
-async def get_signals():
-    """Get recent signals"""
-    return {"message": "Signals endpoint - to be implemented"}
-
-
-@app.get("/api/v1/trades")
-async def get_trades():
-    """Get trade history"""
-    return {"message": "Trades endpoint - to be implemented"}
-
-
-@app.get("/api/v1/positions")
-async def get_positions():
-    """Get current positions"""
-    return {"message": "Positions endpoint - to be implemented"}
-
-
-@app.get("/api/v1/account")
-async def get_account():
-    """Get account information"""
-    return {"message": "Account endpoint - to be implemented"}
 
 
 if __name__ == "__main__":

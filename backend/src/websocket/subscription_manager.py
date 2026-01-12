@@ -32,47 +32,23 @@ class SubscriptionManager:
 
     async def load_fno_universe(self) -> Set[str]:
         """
-        Load FNO universe - loads INSTRUMENT KEYS from SubscribedOption table
-        These are the proper format for Upstox V3 WebSocket: NSE_FO|12345
-        
-        Returns:
-            Set of instrument keys (e.g., NSE_FO|60965, NSE_FO|60966)
+        Load FNO universe - loads ALL 208 FNO underlyings (Data Collection Only)
+        Using ISIN mapping for proper Upstox V3 identifier format: NSE_EQ|{ISIN}
         """
         try:
-            logger.info("🔄 Loading instrument keys from SubscribedOption table...")
+            from ..data.isin_mapping_hardcoded import ISIN_MAPPING
             
-            # Get subscribed options from database
-            db = SessionLocal()
-            try:
-                options = db.query(SubscribedOption).all()
-                
-                # Extract INSTRUMENT KEYS (not option_symbol!) - this is the correct format
-                # Upstox V3 WebSocket expects: NSE_FO|60965 format
-                instrument_keys = [opt.instrument_key for opt in options if opt.instrument_key]
-                self.all_symbols = set(instrument_keys)
-                
-                logger.info(f"✅ Loaded {len(self.all_symbols)} option contracts from database")
-                logger.info(f"   Format: instrument_key (e.g., NSE_FO|60965)")
-                logger.info(f"   Sample keys: {list(self.all_symbols)[:3]}")
-                
-                return self.all_symbols
-                
-            finally:
-                db.close()
+            instrument_keys = []
+            for symbol, isin in ISIN_MAPPING.items():
+                instrument_keys.append(f"NSE_EQ|{isin}")
+            
+            self.all_symbols = set(instrument_keys)
+            logger.info(f"✅ Loaded {len(self.all_symbols)} FNO underlyings for data collection")
+            return self.all_symbols
             
         except Exception as e:
-            logger.error(f"Error loading option symbols from database: {e}")
-            
-            # Fallback: Load base FNO symbols from API if database is empty
-            logger.warning("⚠️  Fallback: Loading base FNO symbols from API...")
-            try:
-                symbols_list = await get_fno_symbols()
-                self.all_symbols = set(symbols_list)
-                logger.info(f"✅ Fallback: Loaded {len(self.all_symbols)} base FNO symbols from API")
-                return self.all_symbols
-            except Exception as api_error:
-                logger.error(f"Fallback also failed: {api_error}")
-                return set()
+            logger.error(f"Error loading FNO universe: {e}")
+            return set()
 
     async def subscribe_to_universe(self) -> bool:
         """
