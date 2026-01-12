@@ -1,0 +1,80 @@
+name: kakarot-trading
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: kakarot_postgres
+    environment:
+      POSTGRES_USER: kakarot_user
+      POSTGRES_PASSWORD: kakarot_password
+      POSTGRES_DB: kakarot_trading
+    ports:
+      - "5433:5432"
+    volumes:
+      - kakarot_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kakarot_user -d kakarot_trading"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - kakarot_network
+
+  redis:
+    image: redis:7-alpine
+    container_name: kakarot_redis
+    ports:
+      - "6380:6379"
+    volumes:
+      - kakarot_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - kakarot_network
+
+  app:
+    image: shetta20/kakarot-app:latest
+    container_name: kakarot_trading_bot
+    env_file:
+      - .env
+    environment:
+      REDIS_URL: redis://redis:6379
+      TZ: Asia/Kolkata
+    ports:
+      - "8001:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - kakarot_network
+
+  dashboard:
+    image: shetta20/kakarot-dashboard:latest
+    container_name: kakarot_dashboard
+    env_file:
+      - .env
+    environment:
+      - API_URL=http://app:8000/api/v1/monitoring
+      - TZ=Asia/Kolkata
+    ports:
+      - "8502:8501"
+    command: streamlit run src/monitoring/dashboard.py --server.port 8501 --server.address 0.0.0.0
+    depends_on:
+      - app
+    networks:
+      - kakarot_network
+
+volumes:
+  kakarot_postgres_data:
+  kakarot_redis_data:
+
+networks:
+  kakarot_network:
+    driver: bridge

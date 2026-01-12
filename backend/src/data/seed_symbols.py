@@ -72,7 +72,6 @@ def seed_symbols(db: Session, use_api: bool = True) -> int:
                 is_fno=True,
                 has_options=True,
                 has_futures=True,
-                status=SymbolStatus.ACTIVE,
                 avg_daily_volume=1000000,  # Default volume estimate
                 liquidity_score=0.7,  # Default liquidity for FNO
                 last_refreshed=ist_now(),

@@ -58,23 +58,6 @@ def init_db():
     # Seed FNO symbols after tables are created
     db = SessionLocal()
     try:
-        # Verify schema (check if tick_id is nullable in signals table)
-        from sqlalchemy import inspect, text
-        inspector = inspect(engine)
-        if 'signals' in inspector.get_table_names():
-            columns = inspector.get_columns('signals')
-            for col in columns:
-                if col['name'] == 'tick_id':
-                    if not col['nullable']:
-                        logger.warning("🚨 SCHEMA ALERT: 'tick_id' is NOT NULL. Attempting auto-fix...")
-                        try:
-                            with engine.connect() as conn:
-                                conn.execute(text("ALTER TABLE signals ALTER COLUMN tick_id DROP NOT NULL"))
-                                conn.commit()
-                            logger.info("✅ SCHEMA FIX: 'tick_id' is now nullable")
-                        except Exception as fix_err:
-                            logger.error(f"❌ Failed to auto-fix schema: {fix_err}")
-        
         from .seed_symbols import seed_symbols
         added = seed_symbols(db, use_api=False)  # use_api=False to use our FNO_SYMBOLS list
         logger.info(f"✅ Seeded {added} FNO symbols into database")

@@ -22,13 +22,6 @@ def fetch_status():
     except:
         return None
 
-def fetch_ml_stats():
-    try:
-        response = requests.get(f"{API_URL}/ml-stats", timeout=2)
-        return response.json()
-    except:
-        return None
-
 def update_settings(payload):
     try:
         response = requests.post(f"{API_URL}/settings", json=payload, timeout=5)
@@ -67,7 +60,7 @@ refresh_rate = st.sidebar.slider("Refresh Rate (seconds)", 1, 30, 10)
 st.title("📈 Tick Collection Dashboard")
 
 # Tabs
-tab1, tab2, tab3 = st.tabs(["📊 Status", "🧠 AI Training Data", "⚙️ Settings"])
+tab1, tab3 = st.tabs(["📊 Status", "⚙️ Settings"])
 
 with tab1:
     # Top Row: Status Cards
@@ -89,7 +82,7 @@ with tab1:
         col1, col2, col3, col4 = st.columns(4)
         
         # 1. Bot Status
-        is_active = status_data["session"]["is_active"]
+        is_active = status_data["websocket"]["running"]
         col1.metric(
             "Bot Status", 
             "🟢 ACTIVE" if is_active else "💤 SLEEPING",
@@ -107,34 +100,15 @@ with tab1:
         # 3. Market Hours
         col3.metric(
             "Market Hours (IST)", 
-            status_data["session"]["market_hours"]
+            f"{status_data['settings']['market_open_time']} - {status_data['settings']['market_close_time']}"
         )
         
         # 4. Mode
         col4.metric(
-            "Trading Mode", 
-            status_data["environment"]["mode"]
+            "Mode", 
+            "Data Collection"
         )
 
-        # Account Summary Row
-        st.markdown("### 💰 Account Summary")
-        acc_col1, acc_col2, acc_col3, acc_col4 = st.columns(4)
-        
-        account = status_data.get("account", {})
-        acc_col1.metric("Opening Balance", f"₹{account.get('balance', 0):,.2f}")
-        acc_col2.metric(
-            "Current Equity", 
-            f"₹{account.get('equity', 0):,.2f}",
-            delta=f"₹{account.get('daily_pnl', 0):,.2f}"
-        )
-        acc_col3.metric(
-            "Daily P&L %", 
-            f"{account.get('daily_pnl_percent', 0):.2f}%",
-            delta=f"{account.get('daily_pnl_percent', 0):.2f}%"
-        )
-        acc_col4.metric("Trades Today", account.get('trades_today', 0))
-
-        # Current Time (IST)
         st.info(f"🕒 **Current System Time (IST):** {status_data['timestamp']}")
 
         # Token Info (Regular)
@@ -171,48 +145,6 @@ with tab1:
         if st.button("Retry Connection"):
             st.rerun()
 
-with tab2:
-    st.header("🧠 AI Training Data Collection")
-    ml_stats = fetch_ml_stats()
-    
-    if ml_stats:
-        # Progress Bar
-        progress = ml_stats["progress_percent"] / 100
-        st.write(f"### Data Collection Progress: {ml_stats['labeled_samples']} / 100 samples")
-        st.progress(progress)
-        
-        if ml_stats["ready_for_training"]:
-            st.success("✅ **Ready for Training!** We have enough data to build the Signal Validation Agent.")
-            if st.button("🚀 Start Model Training (Local)"):
-                st.info("Training process started in background. Check logs for details.")
-        else:
-            st.info(f"⏳ **Collecting Data:** Need {100 - ml_stats['labeled_samples']} more labeled samples to start training.")
-
-        # Stats Cards
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Total Signals", ml_stats["total_samples"])
-        col2.metric("Labeled (Win/Loss)", ml_stats["labeled_samples"])
-        col3.metric("Win Rate", f"{ml_stats['win_rate']:.1f}%")
-        col4.metric("Pending Outcome", ml_stats["pending_samples"])
-
-        # Breakdown
-        st.markdown("---")
-        col_a, col_b = st.columns(2)
-        
-        with col_a:
-            st.markdown("#### 📈 Signal Breakdown")
-            st.write(f"**BUY Signals:** {ml_stats['buy_samples']}")
-            st.write(f"**SELL Signals:** {ml_stats['sell_samples']}")
-            
-        with col_b:
-            st.markdown("#### 🏆 Outcome Breakdown")
-            st.write(f"**Wins:** {ml_stats['wins']}")
-            st.write(f"**Losses:** {ml_stats['losses']}")
-            
-        st.caption("Note: Samples are only 'labeled' once the trade is closed (either TP or SL hit).")
-    else:
-        st.warning("Could not fetch ML statistics.")
-
 with tab3:
     st.subheader("⚙️ Application Settings")
     
@@ -230,7 +162,7 @@ with tab3:
     if status_data and "settings" in status_data:
         # --- NEW: Direct Token Update ---
         st.markdown("### ⚡ Daily Token Update")
-        st.write("Paste your new **Access Token** here to refresh the connection and restart the bot.")
+        st.write("Paste your new **Access Token** here to refresh the connection and restart data collection.")
         
         col_a, col_b = st.columns([1, 3])
         
@@ -240,12 +172,12 @@ with tab3:
         
         with col_b:
             direct_token = st.text_input("2. Paste Access Token", placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...", label_visibility="collapsed")
-            if st.button("3. Apply Token & Restart Bot", type="primary", use_container_width=True, disabled=not direct_token):
+            if st.button("3. Apply Token & Restart Connection", type="primary", use_container_width=True, disabled=not direct_token):
                 with st.spinner("Updating token and restarting services..."):
                     payload = {"upstox_access_token": direct_token.strip()}
                     res = update_settings(payload)
                     if res.get("status") == "success":
-                        st.success("✅ Token updated! Bot is restarting...")
+                        st.success("✅ Token updated! Services are restarting...")
                         time.sleep(2)
                         st.rerun()
                     else:
@@ -260,19 +192,7 @@ with tab3:
             current_masked_token = status_data.get("environment", {}).get("upstox_access_token", "None")
             st.write(f"**Active Token:** `{current_masked_token}`")
             
-            st.markdown("### 🛡️ Risk Management")
-            col1, col2 = st.columns(2)
-            
-            # Use .get() with defaults to avoid KeyErrors if backend is out of sync
             settings_dict = status_data.get("settings", {})
-            paper_mode = col1.toggle("Paper Trading Mode", value=settings_dict.get("paper_trading_mode", True))
-            acc_size = col2.number_input("Account Size (₹)", value=float(settings_dict.get("account_size", 100000.0)), step=10000.0)
-            
-            risk_pct = st.slider("Risk Per Trade (%)", 0.1, 10.0, float(settings_dict.get("risk_per_trade", 0.01) * 100)) / 100
-            
-            col_risk1, col_risk2 = st.columns(2)
-            loss_limit = col_risk1.slider("Daily Loss Limit (%)", 0.5, 10.0, float(settings_dict.get("daily_loss_limit", 0.02) * 100)) / 100
-            profit_target = col_risk2.slider("Daily Profit Target (%)", 1.0, 20.0, float(settings_dict.get("daily_profit_target", 0.05) * 100)) / 100
             
             st.markdown("### 🕒 Market Hours")
             col3, col4 = st.columns(2)
@@ -285,11 +205,6 @@ with tab3:
             
             if submitted:
                 payload = {
-                    "paper_trading_mode": paper_mode,
-                    "account_size": acc_size,
-                    "risk_per_trade": risk_pct,
-                    "daily_loss_limit": loss_limit,
-                    "daily_profit_target": profit_target,
                     "market_open_time": open_time,
                     "market_close_time": close_time,
                     "auto_start_stop": auto_start
@@ -302,6 +217,8 @@ with tab3:
                     st.rerun()
                 else:
                     st.error(f"❌ Failed to update settings: {result.get('message')}")
+    else:
+        st.warning("Settings are unavailable because the API is not reachable.")
     else:
         st.warning("Settings are unavailable because the API is not reachable.")
 
