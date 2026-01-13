@@ -49,7 +49,8 @@ show_status() {
 case "$1" in
     start)
         echo -e "${GREEN}Starting Kakarot services...${NC}"
-        # We use multi-architecture images from Docker Hub that work on both Mac and Linux
+        # Explicitly pull to ensure we get the correct architecture for this machine
+        $DOCKER_COMPOSE pull
         $DOCKER_COMPOSE up -d
         echo -e "${YELLOW}Waiting for database health check...${NC}"
         sleep 5
