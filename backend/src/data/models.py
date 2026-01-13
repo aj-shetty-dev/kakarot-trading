@@ -4,7 +4,7 @@ SQLAlchemy ORM models for database
 """
 
 from typing import Optional, Dict, Any
-from sqlalchemy import Column, String, Float, Integer, DateTime, Boolean, JSON, ForeignKey
+from sqlalchemy import Column, String, Float, Integer, DateTime, Boolean, JSON, ForeignKey, TypeDecorator, CHAR
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import UUID
@@ -15,11 +15,45 @@ from ..config.timezone import ist_now
 Base = declarative_base()
 
 
+class GUID(TypeDecorator):
+    """Platform-independent GUID type.
+    Uses PostgreSQL's UUID type, otherwise uses
+    CHAR(32), storing as stringified hex values.
+    """
+    impl = CHAR
+    cache_ok = True
+
+    def load_dialect_impl(self, dialect):
+        if dialect.name == 'postgresql':
+            return dialect.type_descriptor(UUID(as_uuid=True))
+        else:
+            return dialect.type_descriptor(CHAR(32))
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return value
+        elif dialect.name == 'postgresql':
+            return str(value)
+        else:
+            if not isinstance(value, uuid.UUID):
+                return "%.32x" % uuid.UUID(value).int
+            else:
+                return "%.32x" % value.int
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return value
+        else:
+            if not isinstance(value, uuid.UUID):
+                value = uuid.UUID(value)
+            return value
+
+
 class Symbol(Base):
     """Represents a tradeable symbol (stock with options/futures)"""
     __tablename__ = "symbols"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
     symbol = Column(String(20), unique=True, nullable=False, index=True)
     name = Column(String(100))
     sector = Column(String(50))
@@ -52,8 +86,8 @@ class Tick(Base):
     """Represents a single price tick"""
     __tablename__ = "ticks"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    symbol_id = Column(UUID(as_uuid=True), ForeignKey("symbols.id"), nullable=False, index=True)
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    symbol_id = Column(GUID(), ForeignKey("symbols.id"), nullable=False, index=True)
     symbol = relationship("Symbol", back_populates="ticks")
 
     # Price data
@@ -92,8 +126,8 @@ class Candle(Base):
     """Represents a 1-minute OHLCV candle"""
     __tablename__ = "candles"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    symbol_id = Column(UUID(as_uuid=True), ForeignKey("symbols.id"), nullable=False, index=True)
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    symbol_id = Column(GUID(), ForeignKey("symbols.id"), nullable=False, index=True)
     symbol = relationship("Symbol")
 
     timeframe = Column(String(10), default="1m", index=True)
